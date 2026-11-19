@@ -17,6 +17,7 @@ import type { PluginConfig } from './config.ts';
 import { injectOptional, resolveLogger } from './host-context.ts';
 import type { PluginContext } from './host-context.ts';
 import { LarkConnection } from './lark/connection.ts';
+import { registerPanelRpc } from './panel-host.ts';
 import { sdkFactories } from './lark/sdk.ts';
 import type { LarkCredentials } from './lark/types.ts';
 import type { BridgeHandle, MySuperagentService } from './protocol.ts';
@@ -145,6 +146,8 @@ export async function apply(ctx: PluginContext, config: PluginConfig | unknown =
       'dsh-im-lark: 核心撤销',
     );
   });
+
+  registerPanelRpc(ctx, { runtime, credentials, settings, config: normalized, logger });
 
   logger.info?.(`飞书桥已加载（连接状态：${runtime.status().connection.state}）`);
 }

@@ -15,15 +15,28 @@ export interface PluginLogger {
 /** `ctx.logger`：本插件按 `ctx.logger(name)` 或 `ctx.logger` 直接取。 */
 export type LoggerLike = PluginLogger | ((name: string) => PluginLogger);
 
-/** 面板 RPC 挂载的路由形状（宿主 webServer 的公开子集）。 */
-export interface PanelRoute {
-  method: 'POST' | 'GET';
-  path: string;
-  handler(request: Request): Response | Promise<Response>;
+/** RPC 失败信封：code 给页面判分支，message 是给人看的文案。 */
+export interface RpcFailure {
+  code: string;
+  message: string;
+  details: object;
 }
 
-export interface WebServerLike {
-  route(route: PanelRoute): () => void;
+export type RpcResult<T> = { ok: true; value: T } | { ok: false; error: RpcFailure };
+
+/** 面板 RPC 的一次调用：端点名 + 已解码的 payload。 */
+export type RpcHandler = (
+  endpoint: string,
+  payload: unknown,
+  signal: AbortSignal,
+  peer: unknown,
+) => Promise<RpcResult<unknown>>;
+
+/** 宿主 `connection` 服务里本插件用到的部分：注册一条逻辑 RPC 通道。 */
+export interface ConnectionLike {
+  rpc: {
+    handle(channel: string, handler: RpcHandler): () => Promise<void>;
+  };
 }
 
 export interface PluginContext {
@@ -31,7 +44,7 @@ export interface PluginContext {
   effect?(execute: () => () => void, label?: string): unknown;
   inject?(services: string[], install: (scope: PluginContext) => void): unknown;
   on?(event: string, listener: (...args: unknown[]) => void): () => void;
-  webServer?: WebServerLike;
+  connection?: ConnectionLike;
   [key: string]: unknown;
 }
 

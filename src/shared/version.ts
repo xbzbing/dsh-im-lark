@@ -10,3 +10,14 @@ export const PLUGIN_VERSION = '0.1.0';
 
 /** 传输层实现版本：协议客户端行为变化时递增，与插件版本解耦。 */
 export const CHANNEL_VERSION = '1';
+
+/**
+ * 面板两半的契约版本。
+ *
+ * 浏览器刷新就能拿到新的 `client.js`，host 半却要重装才更新；两边对不上时
+ * 面板提示重启，而不是拿缺字段的响应硬渲染。
+ */
+export const PANEL_CONTRACT = 1;
+
+/** 面板 RPC 的逻辑通道（客户端 `connection.rpc.call` 的第一段）。 */
+export const RPC_CHANNEL = '/dsh-im-lark';
