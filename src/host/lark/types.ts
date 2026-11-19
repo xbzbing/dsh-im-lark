@@ -67,6 +67,8 @@ export interface LarkCardAction {
   operatorOpenId: string;
   /** 按钮上配置的 `value` 对象（飞书要求回传参数是对象）。 */
   value: Record<string, unknown>;
+  /** 下拉/多选组件回传的选项值；按钮回调没有这个字段。 */
+  option?: unknown;
   /** 表单容器提交的数据；本期不用，但类型上留着。 */
   formValues?: Record<string, unknown>;
 }

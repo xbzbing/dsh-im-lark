@@ -21,6 +21,11 @@ export interface LarkEventSink {
   onCardAction(envelope: unknown): void;
 }
 
+export interface RuntimeChange {
+  /** 当前凭据；没有配置为 null。 */
+  app: LarkCredentials | null;
+}
+
 export interface RuntimeDeps {
   config: NormalizedConfig;
   logger: LarkLogger;
@@ -30,6 +35,8 @@ export interface RuntimeDeps {
   createConnection(app: LarkCredentials): LarkConnectionPort;
   /** 事件去向；未装配时事件被丢弃并记一条日志。 */
   sink?: LarkEventSink;
+  /** 凭据变化（启动、面板保存、清除）：入口据此重建整套对象。 */
+  onChange?: (change: RuntimeChange) => void;
 }
 
 /** 面板读的状态快照：只放能安全展示的字段。 */
@@ -67,6 +74,7 @@ export class LarkRuntime {
     this.#stopped = false;
     this.#settings = await this.#deps.settings.load();
     this.#credentials = await this.#deps.credentials.load();
+    this.#deps.onChange?.({ app: this.#credentials });
     if (this.#shouldConnect()) {
       await this.#connect();
     }
@@ -76,6 +84,7 @@ export class LarkRuntime {
   stop(): void {
     this.#stopped = true;
     this.#disconnect();
+    this.#deps.onChange?.({ app: null });
   }
 
   /** 插件当前是否在收消息：启用 && 有凭据 && 未停机。 */
@@ -112,6 +121,7 @@ export class LarkRuntime {
     if (sameCredentials(previous, this.#credentials)) return;
     // 连接是按旧凭据建的，必须重建；只走 #reconcile 会因为「已有连接」而什么都不做。
     this.#disconnect();
+    this.#deps.onChange?.({ app: this.#credentials });
     await this.#reconcile();
   }
 

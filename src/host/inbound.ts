@@ -8,7 +8,7 @@
  * 字段形状以 `docs/protocol/00-飞书开放平台事实.md` §2 为准。
  */
 
-import type { LarkChatType, LarkInboundMessage, LarkMention } from './lark/types.ts';
+import type { LarkCardAction, LarkChatType, LarkInboundMessage, LarkMention } from './lark/types.ts';
 
 /** 正文里引用到的媒体：只有 key，下载是调用方的事。 */
 export interface InboundImageRef {
@@ -330,4 +330,36 @@ function toMillis(value: unknown): number {
   if (text === '') return 0;
   const parsed = Number(text);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/* ------------------------------------------------------------------ 卡片回调 */
+
+/**
+ * 解析 `card.action.trigger`。
+ *
+ * 回调的 3 秒约束意味着这里只做形态收窄：不查状态、不访问网络。业务判定
+ * （是否已作答、是否过期）在 `bridge.applyCardAction` 里做。
+ */
+export function parseCardAction(raw: unknown): LarkCardAction | null {
+  const envelope = asRecord(raw);
+  const event = asRecord(envelope?.event);
+  if (event === null) return null;
+
+  const context = asRecord(event.context);
+  const operator = asRecord(event.operator);
+  const action = asRecord(event.action);
+  const messageId = asText(context?.open_message_id);
+  const chatId = asText(context?.open_chat_id);
+  if (messageId === '' || chatId === '') return null;
+
+  const header = asRecord(envelope?.header);
+  return {
+    eventId: asText(header?.event_id),
+    messageId,
+    chatId,
+    operatorOpenId: asText(operator?.open_id) || asText(operator?.user_id),
+    value: asRecord(action?.value) ?? {},
+    ...(action?.option === undefined ? {} : { option: action.option }),
+    ...(asRecord(action?.form_value) === null ? {} : { formValues: asRecord(action?.form_value) as Record<string, unknown> }),
+  };
 }

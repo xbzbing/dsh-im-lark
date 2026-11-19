@@ -42,6 +42,8 @@ export interface OutboundInput {
   /** 幂等键。 */
   deliveryId: string;
   text: string;
+  /** 目标会话；缺省用通道建时的那个（一个通道可以服务多个会话）。 */
+  chatId?: string;
   /** 回复某条消息；只有第一条消息会走 reply，后续走群发。 */
   replyTo?: string;
   images?: readonly OutboundImage[];
@@ -51,6 +53,8 @@ export interface OutboundInput {
   /** 卡片标题；不传则是纯内容卡。 */
   title?: string;
   template?: CardTemplate;
+  /** 已经渲染好的卡片；给了就不再按 `text` 生成卡片（交互卡走这条路）。 */
+  card?: unknown;
 }
 
 export interface OutboundReceipt {
@@ -64,7 +68,8 @@ export interface OutboundReceipt {
 
 export interface OutboundChannelOptions {
   api: LarkApi;
-  chatId: string;
+  /** 默认目标会话；交付自带 `chatId` 时以交付为准。 */
+  chatId?: string;
   /** 单条字符上限；分条用。 */
   maxText: number;
   logger?: LarkLogger;
@@ -94,7 +99,7 @@ const DEFAULT_MAX_ATTEMPTS = 3;
 
 export class OutboundChannel {
   readonly #api: LarkApi;
-  readonly #chatId: string;
+  readonly #chatId: string | undefined;
   readonly #maxText: number;
   readonly #logger: LarkLogger;
   readonly #now: () => number;
@@ -130,12 +135,14 @@ export class OutboundChannel {
     if (parts.length === 0) return this.#succeed(input.deliveryId, []);
 
     const progress = this.#progress.get(input.deliveryId) ?? { parts: 0, messageIds: [] };
+    const chatId = input.chatId ?? this.#chatId;
+    if (chatId === undefined || chatId === '') return this.#fail(input.deliveryId, 'other', '没有目标会话');
 
     for (let index = progress.parts; index < parts.length; index += 1) {
       const part = parts[index]!;
       try {
         // 只有第一条回复原消息：后面的段落再 reply 会变成一串重复的引用。
-        const messageId = await this.#sendWithRetry(part, index, index === 0 ? input.replyTo : undefined, input.deliveryId);
+        const messageId = await this.#sendWithRetry(part, index, index === 0 ? input.replyTo : undefined, input.deliveryId, chatId);
         progress.messageIds.push(messageId);
         progress.parts = index + 1;
         this.#progress.set(input.deliveryId, progress);
@@ -172,7 +179,10 @@ export class OutboundChannel {
       });
 
     const parts: Part[] = [];
-    for (const segment of splitMarkdown(input.text, this.#maxText)) {
+    if (input.card !== undefined) {
+      parts.push({ kind: 'card', label: '卡片', payload: cardContent(input.card) });
+    }
+    for (const segment of input.card === undefined ? splitMarkdown(input.text, this.#maxText) : []) {
       // 字符没超但字节超了（表情、多字节字符多）：继续对半切，直到装得下。
       for (const piece of shrinkToCardLimit(segment, render)) {
         parts.push({ kind: 'card', label: '回答', payload: cardContent(render(piece)) });
@@ -188,14 +198,20 @@ export class OutboundChannel {
     return parts;
   }
 
-  async #sendWithRetry(part: Part, index: number, replyTo: string | undefined, deliveryId: string): Promise<string> {
+  async #sendWithRetry(
+    part: Part,
+    index: number,
+    replyTo: string | undefined,
+    deliveryId: string,
+    chatId: string,
+  ): Promise<string> {
     const uuid = idempotencyKey(deliveryId, index);
     let lastError: unknown;
 
     for (let attempt = 1; attempt <= this.#maxAttempts; attempt += 1) {
       try {
         await this.#gate.acquire();
-        return await this.#sendOnce(part, replyTo, uuid);
+        return await this.#sendOnce(part, replyTo, chatId, uuid);
       } catch (error) {
         lastError = error;
         const failure = toLarkFailure(error);
@@ -208,12 +224,12 @@ export class OutboundChannel {
     throw lastError;
   }
 
-  async #sendOnce(part: Part, replyTo: string | undefined, uuid: string): Promise<string> {
+  async #sendOnce(part: Part, replyTo: string | undefined, chatId: string, uuid: string): Promise<string> {
     if (part.kind === 'card') {
       const content = part.payload as string;
       const result =
         replyTo === undefined
-          ? await this.#api.createMessage({ chatId: this.#chatId, msgType: 'interactive', content, options: { uuid } })
+          ? await this.#api.createMessage({ chatId, msgType: 'interactive', content, options: { uuid } })
           : await this.#api.replyMessage({ messageId: replyTo, msgType: 'interactive', content, options: { uuid } });
       return result.messageId;
     }
@@ -225,7 +241,7 @@ export class OutboundChannel {
       }
       const uploaded = await this.#api.uploadImage({ bytes, fileName: part.label });
       const result = await this.#api.createMessage({
-        chatId: this.#chatId,
+        chatId,
         msgType: 'image',
         content: JSON.stringify({ image_key: uploaded.imageKey }),
         options: { uuid },
@@ -243,7 +259,7 @@ export class OutboundChannel {
       fileType: part.fileType ?? fileTypeOf(part.label),
     });
     const result = await this.#api.createMessage({
-      chatId: this.#chatId,
+      chatId,
       msgType: 'file',
       content: JSON.stringify({ file_key: uploaded.fileKey }),
       options: { uuid },

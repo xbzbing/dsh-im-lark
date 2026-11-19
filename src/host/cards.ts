@@ -1,5 +1,5 @@
 /**
- * 卡片 JSON 构造。
+ * 卡片 JSON 构造与交互状态。
  *
  * 回答统一走**卡片**而不是纯文本：飞书文本消息不渲染 Markdown，卡片里的
  * `markdown` 组件才认标题、列表、表格与代码块。代价是体积上限更小（30 KB），
@@ -7,14 +7,31 @@
  *
  * 结构以卡片 JSON 2.0 为准（`"schema": "2.0"` + `body.elements`），仅支持共享
  * 卡片，因此 `update_multi` 恒为 `true`，后续才能原地 PATCH。
+ *
+ * 交互按钮把 `value` 收敛成短键对象（`{d,q,o}`）：卡片体积敏感，且 `value`
+ * 必须是对象（平台硬要求）。
  */
 
 import { CARD_BODY_BYTES_MAX } from '../shared/limits.ts';
+import type { Interaction, InteractionAnswerDraft, InteractionAnswerItem, InteractionQuestion, Delivery } from './protocol.ts';
+import type { RejectReason } from './protocol.ts';
 
 export const CARD_SCHEMA = '2.0';
 
 /** 卡片模板色：只用平台内置枚举，别传自定义色值。 */
-export type CardTemplate = 'blue' | 'wathet' | 'turquoise' | 'green' | 'yellow' | 'orange' | 'red' | 'carmine' | 'violet' | 'purple' | 'indigo' | 'grey';
+export type CardTemplate =
+  | 'blue'
+  | 'wathet'
+  | 'turquoise'
+  | 'green'
+  | 'yellow'
+  | 'orange'
+  | 'red'
+  | 'carmine'
+  | 'violet'
+  | 'purple'
+  | 'indigo'
+  | 'grey';
 
 export interface MarkdownCardOptions {
   /** 卡片标题；不传则没有头部，纯内容卡。 */
@@ -24,25 +41,15 @@ export interface MarkdownCardOptions {
   streaming?: boolean;
 }
 
+export type Card = Record<string, unknown>;
+
 /** 一张只含 Markdown 的卡片。 */
-export function renderMarkdownCard(markdown: string, options: MarkdownCardOptions = {}): Record<string, unknown> {
+export function renderMarkdownCard(markdown: string, options: MarkdownCardOptions = {}): Card {
   return {
     schema: CARD_SCHEMA,
-    config: {
-      update_multi: true,
-      ...(options.streaming === true ? { streaming_mode: true } : {}),
-    },
-    ...(options.title === undefined || options.title === ''
-      ? {}
-      : {
-          header: {
-            title: { tag: 'plain_text', content: options.title },
-            template: options.template ?? 'blue',
-          },
-        }),
-    body: {
-      elements: [{ tag: 'markdown', content: markdown, text_size: 'normal' }],
-    },
+    config: { update_multi: true, ...(options.streaming === true ? { streaming_mode: true } : {}) },
+    ...headerOf(options),
+    body: { elements: [{ tag: 'markdown', content: markdown, text_size: 'normal' }] },
   };
 }
 
@@ -58,4 +65,268 @@ export function cardFits(card: unknown): boolean {
 /** 消息体：`content` 字段要的是 JSON 字符串，不是对象。 */
 export function cardContent(card: unknown): string {
   return JSON.stringify(card);
+}
+
+function headerOf(options: MarkdownCardOptions): Record<string, unknown> {
+  if (options.title === undefined || options.title === '') return {};
+  return {
+    header: {
+      title: { tag: 'plain_text', content: options.title },
+      template: options.template ?? 'blue',
+    },
+  };
+}
+
+/* ------------------------------------------------------------------ 交付卡片 */
+
+export interface DeliveryCardOptions {
+  /** 交互状态；有它才渲染按钮。 */
+  interaction?: Interaction;
+  /** 是否渲染按钮；流式更新与已作答的终态卡传 false。 */
+  interactive?: boolean;
+}
+
+/**
+ * 把一条交付渲染成卡片：标题 + 正文 + 详情 + 参考 + 交互按钮。
+ *
+ * 已作答的终态卡不渲染按钮：共享卡片所有人可见，留着一个还能点的按钮会让
+ * 「谁点的算数」变得含糊。
+ */
+export function renderDeliveryCard(delivery: Delivery, options: DeliveryCardOptions = {}): Card {
+  const elements: unknown[] = [];
+  const body = [delivery.body];
+  if (delivery.detail !== undefined && delivery.detail !== '') body.push(['---', '', delivery.detail].join('\n'));
+  if (delivery.refs !== undefined && delivery.refs.length > 0) {
+    body.push(['参考：', ...delivery.refs.map((ref) => `- ${ref.title ?? ref.id}`)].join('\n'));
+  }
+  elements.push({ tag: 'markdown', content: body.join('\n\n'), text_size: 'normal' });
+
+  const interaction = options.interaction ?? delivery.interaction;
+  if (options.interactive !== false && interaction !== undefined) {
+    for (const question of interaction.questions) {
+      elements.push(...renderQuestion(delivery.id, question));
+    }
+  }
+
+  return {
+    schema: CARD_SCHEMA,
+    config: { update_multi: true },
+    ...headerOf({ title: delivery.title }),
+    body: { elements },
+  };
+}
+
+/** 一个问题：题干 + 选项按钮；审批类只提示、不给按钮。 */
+function renderQuestion(deliveryId: string, question: InteractionQuestion): unknown[] {
+  const label = question.header ?? '请选择';
+  const elements: unknown[] = [
+    { tag: 'markdown', content: `**${label}**\n${question.question}`, text_size: 'normal' },
+  ];
+
+  if (question.intent === 'approval') {
+    elements.push({ tag: 'markdown', content: '_审批请在 DeepSeek Harness Web 端处理。_', text_size: 'notation' });
+    return elements;
+  }
+
+  const options = question.options ?? [];
+  if (options.length === 0) return elements;
+
+  if (question.multiSelect === true) {
+    elements.push({
+      tag: 'multi_select_static',
+      placeholder: { tag: 'plain_text', content: '可多选，选完提交' },
+      options: options.map((option, index) => ({
+        text: { tag: 'plain_text', content: option.label },
+        value: String(index),
+      })),
+      behaviors: [{ type: 'callback', value: { d: deliveryId, q: question.id } }],
+    });
+    return elements;
+  }
+
+  // 单选用按钮：点一下就作答，不需要「提交」，少一次交互。
+  elements.push({
+    tag: 'column_set',
+    flex_mode: 'flow',
+    columns: options.map((option, index) => ({
+      tag: 'column',
+      width: 'auto',
+      elements: [
+        {
+          tag: 'button',
+          text: { tag: 'plain_text', content: option.label },
+          type: 'default',
+          behaviors: [{ type: 'callback', value: { d: deliveryId, q: question.id, o: index } }],
+        },
+      ],
+    })),
+  });
+  return elements;
+}
+
+/** 已作答的卡：保留正文与题干，附上选择结果，不再有按钮。 */
+export function renderAnsweredCard(delivery: Delivery, answers: readonly InteractionAnswerItem[]): Card {
+  const card = renderDeliveryCard(delivery, { interactive: false });
+  const body = card.body as { elements: unknown[] };
+  const lines = answers.map((answer) => {
+    const question = delivery.interaction?.questions.find((item) => item.id === answer.id);
+    const chosen = answer.selected.length > 0 ? answer.selected.join('、') : answer.custom ?? '（自定义）';
+    return `- ${question?.header ?? question?.question ?? answer.id}：${chosen}`;
+  });
+  body.elements.push({ tag: 'markdown', content: ['---', '', '**已作答**', ...lines].join('\n'), text_size: 'normal' });
+  return card;
+}
+
+/** 被 `supersedes` 替代的卡：明确告诉用户这张不作数了。 */
+export function renderSupersededCard(delivery: Delivery): Card {
+  const card = renderDeliveryCard(delivery, { interactive: false });
+  const body = card.body as { elements: unknown[] };
+  body.elements.push({ tag: 'markdown', content: '_这条已过期，已被新卡片替代。_', text_size: 'notation' });
+  return card;
+}
+
+/* ------------------------------------------------------------------ 交互状态 */
+
+export interface PendingInteraction {
+  deliveryId: string;
+  chatId: string;
+  /** 卡片所在消息 id；PATCH 终态用。 */
+  messageId: string;
+  questions: readonly InteractionQuestion[];
+  createdAt: number;
+  expiresAt?: number;
+  answered: boolean;
+}
+
+/**
+ * 未作答的交互卡。
+ *
+ * 只在内存里：进程重启后按钮点下去会找不到上下文，回「已过期」比乱答安全。
+ */
+export class InteractionStore {
+  readonly #byDelivery = new Map<string, PendingInteraction>();
+  readonly #max: number;
+
+  constructor(options: { max?: number } = {}) {
+    this.#max = options.max ?? 200;
+  }
+
+  add(entry: PendingInteraction): void {
+    this.#byDelivery.set(entry.deliveryId, entry);
+    while (this.#byDelivery.size > this.#max) {
+      const oldest = this.#byDelivery.keys().next();
+      if (oldest.done) break;
+      this.#byDelivery.delete(oldest.value);
+    }
+  }
+
+  get(deliveryId: string): PendingInteraction | undefined {
+    return this.#byDelivery.get(deliveryId);
+  }
+
+  markAnswered(deliveryId: string): void {
+    const entry = this.#byDelivery.get(deliveryId);
+    if (entry !== undefined) entry.answered = true;
+  }
+
+  delete(deliveryId: string): void {
+    this.#byDelivery.delete(deliveryId);
+  }
+
+  clear(): void {
+    this.#byDelivery.clear();
+  }
+
+  get size(): number {
+    return this.#byDelivery.size;
+  }
+}
+
+/**
+ * 把按钮回调翻译成协议里的作答。
+ *
+ * 约定：
+ * - value 里的 `d`/`q`/`o` 是我们自己写的，短键省卡片体积；
+ * - 多选的 `action.option` 可能是单个值、逗号串或数组，三种都认；
+ * - 审批类一律 `not-allowed`（协议里 IM 不代答审批）。
+ */
+export function answerFromAction(
+  value: Record<string, unknown>,
+  option: unknown,
+  sender: string,
+  store: InteractionStore,
+  now: number,
+): InteractionAnswerDraft | { reason: RejectReason; detail?: string } {
+  const deliveryId = typeof value.d === 'string' ? value.d : '';
+  const questionId = typeof value.q === 'string' ? value.q : '';
+  if (deliveryId === '' || questionId === '') return { reason: 'invalid', detail: '回调缺少交付或问题 id' };
+
+  const pending = store.get(deliveryId);
+  if (pending === undefined) return { reason: 'unknown', detail: '交付已不在内存里（可能已重启）' };
+  if (pending.answered) return { reason: 'settled', detail: '这条已经作答' };
+  if (pending.expiresAt !== undefined && pending.expiresAt <= now) return { reason: 'expired' };
+
+  const question = pending.questions.find((item) => item.id === questionId);
+  if (question === undefined) return { reason: 'invalid', detail: '问题不在这次交付里' };
+  if (question.intent === 'approval') return { reason: 'not-allowed', detail: '审批请在 Web 端处理' };
+
+  const selected = resolveSelection(question, value, option);
+  if (selected === undefined) return { reason: 'invalid-answer', detail: '无法从回调里认出选项' };
+
+  return {
+    deliveryId,
+    sender,
+    answers: [{ id: question.id, selected }],
+    at: now,
+  };
+}
+
+/** 把按钮 index / 多选值还原成选项文案。 */
+function resolveSelection(question: InteractionQuestion, value: Record<string, unknown>, option: unknown): string[] | undefined {
+  const options = question.options ?? [];
+  const fromIndices = (raw: unknown): string[] | undefined => {
+    const indices = toIndexList(raw);
+    if (indices === undefined) return undefined;
+    const labels = indices.map((index) => options[index]?.label).filter((label): label is string => label !== undefined);
+    return labels.length === 0 ? undefined : labels;
+  };
+
+  if (typeof value.o === 'number') return fromIndices([value.o]);
+  if (typeof value.o === 'string') return fromIndices([value.o]);
+
+  // 多选：数组优先；字符串可能是 "0,2"、"0%2C2" 或单个值。
+  const multi = fromIndices(option);
+  if (multi !== undefined) return multi;
+
+  // 有些客户端直接把选项文案回传，认文案兜底。
+  const labels = toStringList(option).filter((text) => options.some((item) => item.label === text));
+  return labels.length === 0 ? undefined : labels;
+}
+
+function toIndexList(raw: unknown): number[] | undefined {
+  const items = Array.isArray(raw) ? raw : [raw];
+  const indices: number[] = [];
+
+  for (const item of items) {
+    if (typeof item === 'number') {
+      if (!Number.isInteger(item) || item < 0) return undefined;
+      indices.push(item);
+      continue;
+    }
+    if (typeof item !== 'string') continue;
+    for (const text of item.split(',')) {
+      const trimmed = text.trim();
+      if (trimmed === '') continue;
+      const parsed = Number(trimmed);
+      if (!Number.isInteger(parsed) || parsed < 0) return undefined;
+      indices.push(parsed);
+    }
+  }
+  return indices.length === 0 ? undefined : indices;
+}
+
+function toStringList(raw: unknown): string[] {
+  if (Array.isArray(raw)) return raw.filter((item): item is string => typeof item === 'string');
+  if (typeof raw === 'string') return raw.split(',').map((item) => item.trim());
+  return [];
 }
