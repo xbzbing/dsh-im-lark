@@ -408,9 +408,17 @@ export class StandaloneChat {
     const settings = this.#settings();
     const footer = settings.replyStatus && trace !== undefined && trace !== null ? statusLine(trace) : '';
     const body = footer === '' ? text : `${text}\n\n---\n${footer}`;
+
+    // 重启后事件可能先到（绑定还在、本次进程还没收到过消息）：退回主人最近一次的会话。
+    const chatId = this.#chatId !== '' ? this.#chatId : (await this.#owners.get())?.chatId ?? '';
+    if (chatId === '') {
+      this.#logger.warn?.('独立模式回复没有目标会话，已丢弃');
+      return;
+    }
+
     const receipt = await this.#outbound.deliver({
       deliveryId: `direct-${this.#now()}-${(this.#sequence += 1)}`,
-      chatId: this.#chatId,
+      chatId,
       text: body,
       ...(this.#lastUserMessageId === undefined ? {} : { replyTo: this.#lastUserMessageId }),
     });
