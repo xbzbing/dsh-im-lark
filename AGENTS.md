@@ -33,6 +33,8 @@
 ## 协议要点（容易踩）
 
 - 草稿的 `messageId` 是**去重键**，`platformMessageId` 才是 `replyTo` 里要逐字匹配的那个。
+- 核心的 `Delivery.recipient` 是草稿的 `sender`（飞书是 open_id），`inReplyTo` 是草稿的
+  `messageId`；桥负责翻译成 `chat_id` 与平台 `message_id`，不要直接透传。
 - `Receipt.bridgeMessageId` 是平台消息 id；切段发送时 `bridgeMessageIds` 要给全，`messagesSent` 用于配额核算。
 - `Delivery.id` 是幂等键：同 id 重投不得重复发消息。
 - `stream` 的 revision 只能递增；`supersedes` 必须让旧卡片失效。
