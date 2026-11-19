@@ -7,7 +7,7 @@
  * 错误一律收敛成 `LarkFailure`（`errors.ts`），调用方按 `kind` 决定重试与降级。
  */
 
-import { LarkFailure as Failure } from './errors.ts';
+import { LarkFailure as Failure, failureOfCode } from './errors.ts';
 import type { LarkLogger } from './connection.ts';
 import type {
   LarkCardAction,
@@ -112,7 +112,7 @@ function unwrap(raw: unknown, operation: string): Record<string, unknown> {
   }
   const value = raw as RawEnvelope;
   if (typeof value.code === 'number' && value.code !== OK) {
-    throw new Failure({ kind: 'other', code: value.code, message: `${operation}: ${value.msg ?? '未知错误'}` });
+    throw failureOfCode(value.code, `${operation}: ${value.msg ?? '未知错误'}`);
   }
   if (value.data && typeof value.data === 'object') return value.data as Record<string, unknown>;
   return value as Record<string, unknown>;

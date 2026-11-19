@@ -37,7 +37,7 @@ const CAPABILITIES: BridgeCapabilities = {
     multiChoice: true,
     freeText: true,
     maxOptions: 20,
-    maxQuestions: 5,
+    maxQuestions: 1,
     updateAfterAnswer: 'any',
   }),
   edit: Object.freeze({ scope: 'any', minIntervalMs: 2_000, maxLifetimeMs: 14 * 24 * 60 * 60 * 1000 }),
@@ -78,7 +78,7 @@ export interface LarkBridge {
 }
 
 /** 已交付记录与流式修订的内存上限：长跑进程不能让它们无限涨。 */
-const MAX_DELIVERED = 500;
+const MAX_DELIVERED = 2_000;
 /** 入站引用表与「收件人 → 会话」表的上限。 */
 const MAX_INBOUND = 500;
 const MAX_SENDER_CHATS = 50;
@@ -103,6 +103,8 @@ export function createLarkBridge(deps: BridgeDeps): LarkBridge {
   const delivered = new Map<string, { delivery: Delivery; messageId: string }>();
   /** 流式交付的当前修订：低于它的修订不再产生平台操作。 */
   const streams = new Map<string, { revision: number; messageId: string }>();
+  /** 卡片装不下的流：已用分条消息发过一次，后续修订不再原地 PATCH，避免消息瀑布。 */
+  const detachedStreams = new Map<string, string>();
   /** 核心回引用的 `messageId` → 平台消息 id（有界）。 */
   const inbound = new Map<string, string>();
   /** 收件人（核心传的是 sender/open_id）→ 最近一次说话的会话 id（有界）。 */
@@ -129,7 +131,13 @@ export function createLarkBridge(deps: BridgeDeps): LarkBridge {
     }
 
     const stream = delivery.stream;
+    let streamOversized = false;
     if (stream !== undefined) {
+      const detached = detachedStreams.get(stream.id);
+      if (detached !== undefined) {
+        // 已经用分条消息发过最终内容；后续修订再发只会刷屏。
+        return { deliveryId, status: 'sent', bridgeMessageId: detached, messagesSent: 0 };
+      }
       const current = streams.get(stream.id);
       if (current !== undefined && stream.revision < current.revision) {
         // 迟到的旧修订：什么都不做，但也要回「已送达」，否则核心会一直重投。
@@ -137,14 +145,18 @@ export function createLarkBridge(deps: BridgeDeps): LarkBridge {
       }
       if (current !== undefined) {
         const card = renderDeliveryCard(delivery, { interactive: false });
-        try {
-          await deps.api.patchCard({ messageId: current.messageId, card });
-          remember(streams, stream.id, { revision: stream.revision, messageId: current.messageId }, MAX_DELIVERED);
-          // 后一次交付可能 supersedes 这次：终态改写要能找到原文。
-          remember(delivered, deliveryId, { delivery, messageId: current.messageId }, MAX_DELIVERED);
-          return { deliveryId, status: 'sent', bridgeMessageId: current.messageId, messagesSent: 0 };
-        } catch (error) {
-          logger.warn?.('流式更新失败，改为重新发送', errorText(error));
+        if (!cardFits(card)) {
+          // 这次修订装不进卡片：只发一次分条最终稿，并把这条流标记为「不再原地更新」。
+          streamOversized = true;
+          logger.warn?.('流式卡片超过体积上限，改为一次性分条发送', stream.id);
+        } else {
+          try {
+            await deps.api.patchCard({ messageId: current.messageId, card });
+            remember(streams, stream.id, { revision: stream.revision, messageId: current.messageId }, MAX_DELIVERED);
+            return { deliveryId, status: 'sent', bridgeMessageId: current.messageId, messagesSent: 0 };
+          } catch (error) {
+            logger.warn?.('流式更新失败，改为重新发送', errorText(error));
+          }
         }
       }
     }
@@ -153,8 +165,6 @@ export function createLarkBridge(deps: BridgeDeps): LarkBridge {
     if (chatId === undefined) {
       return failure(deliveryId, 'other', '收件人没有可用的会话：先让主人给机器人发一条消息');
     }
-
-    if (delivery.supersedes !== undefined) await supersede(delivery.supersedes);
 
     const images = (delivery.images ?? []).map((image) => ({
       bytes: Buffer.from(image.data, 'base64'),
@@ -199,9 +209,20 @@ export function createLarkBridge(deps: BridgeDeps): LarkBridge {
     const messageId = receipt.messageIds[0];
     if (messageId !== undefined) {
       remember(delivered, deliveryId, { delivery, messageId }, MAX_DELIVERED);
-      if (stream !== undefined) remember(streams, stream.id, { revision: stream.revision, messageId }, MAX_DELIVERED);
+      if (stream !== undefined) {
+        if (streamOversized || !cardFits(card)) {
+          remember(detachedStreams, stream.id, messageId, MAX_DELIVERED);
+        } else {
+          remember(streams, stream.id, { revision: stream.revision, messageId }, MAX_DELIVERED);
+        }
+      }
     }
-    if (delivery.interaction !== undefined && messageId !== undefined && useCard) {
+    if (
+      delivery.interaction !== undefined &&
+      messageId !== undefined &&
+      useCard &&
+      delivery.interaction.questions.length === 1
+    ) {
       // 同一交付被重投时不要把它从「已作答」打回待作答。
       const previous = interactions.get(deliveryId);
       interactions.add({
@@ -215,6 +236,9 @@ export function createLarkBridge(deps: BridgeDeps): LarkBridge {
       });
     }
 
+    // 新卡发成功后再作废旧卡：发送失败时旧卡仍然有效，不会两头落空。
+    if (delivery.supersedes !== undefined) await supersede(delivery.supersedes);
+
     const sent: Receipt = {
       deliveryId,
       status: 'sent',
@@ -222,13 +246,10 @@ export function createLarkBridge(deps: BridgeDeps): LarkBridge {
       ...(receipt.messageIds.length === 0 ? {} : { bridgeMessageIds: receipt.messageIds }),
       messagesSent: receipt.messagesSent,
     };
-    if (!interactionDropped) return sent;
-    return {
-      ...sent,
-      status: 'failed',
-      errorCode: 'too-long',
-      error: '交互卡片超过平台上限，已降级为纯文本；请在 Web 端作答',
-    };
+    // 内容已经送达，只是交互改在 Web 端作答；回成功避免核心重投或换路由。
+    return interactionDropped
+      ? { ...sent, error: '交互卡片超过平台上限，已降级为纯文本；请在 Web 端作答' }
+      : sent;
   }
 
   /** 核心传的是 sender/open_id；飞书发消息要 chat_id，用入站学到的映射翻译。 */
@@ -244,7 +265,10 @@ export function createLarkBridge(deps: BridgeDeps): LarkBridge {
   /** 旧卡改成终态；失败只记日志，不能让新交付因此失败。 */
   async function supersede(deliveryId: string): Promise<void> {
     const record = delivered.get(deliveryId);
-    if (record === undefined) return;
+    if (record === undefined) {
+      logger.warn?.('旧卡片已不在内存里，无法标记为已替代', deliveryId);
+      return;
+    }
     try {
       await deps.api.patchCard({ messageId: record.messageId, card: renderSupersededCard(record.delivery) });
     } catch (error) {
@@ -312,6 +336,7 @@ export function createLarkBridge(deps: BridgeDeps): LarkBridge {
     detach();
     delivered.clear();
     streams.clear();
+    detachedStreams.clear();
     interactions.clear();
   }
 
@@ -320,6 +345,8 @@ export function createLarkBridge(deps: BridgeDeps): LarkBridge {
 
 /** 有界 Map：超出上限先删最早插入的键（Map 保序）。 */
 function remember<K, V>(map: Map<K, V>, key: K, value: V, max: number): void {
+  // 先删再插：Map 的迭代顺序就是淘汰顺序，命中要刷新，否则热键会被旧键挤掉。
+  map.delete(key);
   map.set(key, value);
   while (map.size > max) {
     const oldest = map.keys().next();

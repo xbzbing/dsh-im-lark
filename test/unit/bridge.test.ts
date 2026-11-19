@@ -222,6 +222,27 @@ test('桥：重启后还没收到消息时，从本机 owner 映射找回会话'
   assert.deepEqual(sentChatIds, ['oc_seed']);
 });
 
+test('桥：多问题交互不登记（IM 无法一次答完，交回 Web）', async () => {
+  const { provider, bridge } = fixture();
+  const core = coreHandle();
+  bridge.attach(core.handle);
+
+  const receipt = await provider.deliver({
+    ...DELIVERY,
+    id: 'dlv_multi',
+    intent: 'action',
+    interaction: {
+      questions: [
+        { id: 'q1', question: '甲？', options: [{ label: '一' }] },
+        { id: 'q2', question: '乙？', options: [{ label: '二' }] },
+      ],
+    },
+  });
+
+  assert.equal(receipt.status, 'sent');
+  assert.equal(bridge.interactions.size, 0);
+});
+
 test('桥：流式修订原地更新，迟到修订不产生操作', async () => {
   const { provider, operations } = fixture();
   const stream = { id: 's_1', revision: 1, final: false };
@@ -235,6 +256,27 @@ test('桥：流式修订原地更新，迟到修订不产生操作', async () =>
   assert.equal(stale.messagesSent, 0);
   assert.equal(operations().length, before);
   assert.equal(operations().filter((op) => op.kind === 'edit').length, 1);
+});
+
+test('桥：流式卡片超限只分条发一次，后续修订不刷屏', async () => {
+  const { provider, operations } = fixture();
+  const body = 'a'.repeat(30_000);
+  const stream = { id: 'big', revision: 1, final: false };
+
+  const first = await provider.deliver({ ...DELIVERY, id: 'dlv_big1', intent: 'progress', body, stream });
+  assert.equal(first.status, 'sent');
+  const sent = operations().length;
+  assert.ok(sent > 1, '超长内容应分条发送');
+
+  const second = await provider.deliver({
+    ...DELIVERY,
+    id: 'dlv_big2',
+    intent: 'progress',
+    body,
+    stream: { ...stream, revision: 2 },
+  });
+  assert.equal(second.messagesSent, 0);
+  assert.equal(operations().length, sent);
 });
 
 test('桥：supersedes 把旧卡改成终态', async () => {

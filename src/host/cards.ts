@@ -103,8 +103,19 @@ export function renderDeliveryCard(delivery: Delivery, options: DeliveryCardOpti
 
   const interaction = options.interaction ?? delivery.interaction;
   if (options.interactive !== false && interaction !== undefined) {
-    for (const question of interaction.questions) {
-      elements.push(...renderQuestion(delivery.id, question));
+    if (!isAnswerable(interaction)) {
+      for (const question of interaction.questions) {
+        elements.push({ tag: 'markdown', content: `**${question.header ?? '请选择'}**\n${question.question}`, text_size: 'normal' });
+      }
+      elements.push({
+        tag: 'markdown',
+        content: '_这条交互包含多个问题，或需要审批/自定义输入；请在 DeepSeek Harness Web 端作答，审批也在 Web 端处理。_',
+        text_size: 'notation',
+      });
+    } else {
+      for (const question of interaction.questions) {
+        elements.push(...renderQuestion(delivery.id, question));
+      }
     }
   }
 
@@ -114,6 +125,18 @@ export function renderDeliveryCard(delivery: Delivery, options: DeliveryCardOpti
     ...headerOf({ title: delivery.title }),
     body: { elements },
   };
+}
+
+/**
+ * 这套交互能不能在飞书卡片里答完。
+ *
+ * 核心要求一次提交全部问题；多问题时用户没法在一张卡上「先答一题、再答一题」，
+ * 所以只对单问题、非审批、且有选项的交互渲染按钮；其余明确引导去 Web 端。
+ */
+export function isAnswerable(interaction: Interaction): boolean {
+  if (interaction.questions.length !== 1) return false;
+  const question = interaction.questions[0]!;
+  return question.intent !== 'approval' && (question.options?.length ?? 0) > 0;
 }
 
 /** 一个问题：题干 + 选项按钮；审批类只提示、不给按钮。 */
@@ -208,10 +231,12 @@ export class InteractionStore {
   readonly #max: number;
 
   constructor(options: { max?: number } = {}) {
-    this.#max = options.max ?? 200;
+    this.#max = options.max ?? 500;
   }
 
   add(entry: PendingInteraction): void {
+    // 先删再插：命中不会把旧待作答卡顶到淘汰位。
+    this.#byDelivery.delete(entry.deliveryId);
     this.#byDelivery.set(entry.deliveryId, entry);
     while (this.#byDelivery.size > this.#max) {
       const oldest = this.#byDelivery.keys().next();

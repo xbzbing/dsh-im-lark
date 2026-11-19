@@ -41,7 +41,7 @@ export interface RuntimeDeps {
   onSettings?: (settings: LocalSettings) => void;
   /** 初次启动失败后的重试基数（毫秒），默认 5000；测试可调小。 */
   retryBaseMs?: number;
-  /** 假活看门狗周期（毫秒），默认 60000；0 表示关闭，测试可调小。 */
+  /** 连接失败巡检周期（毫秒），默认 60000；0 表示关闭，测试可调小。 */
   watchdogMs?: number;
 }
 
@@ -72,7 +72,7 @@ export class LarkRuntime {
   /** 初次连接失败后的自愈定时器（指数退避，最长 60 秒）。 */
   #retryTimer: ReturnType<typeof setTimeout> | undefined;
   #retryAttempt = 0;
-  /** 假活检测：状态连着但长期没有帧时主动重建。 */
+  /** 失败状态巡检：SDK 放弃重试后由运行期接住。 */
   #watchdogTimer: ReturnType<typeof setInterval> | undefined;
 
   constructor(deps: RuntimeDeps) {
@@ -247,15 +247,8 @@ export class LarkRuntime {
       const connection = this.#connection;
       if (connection === null) return;
       // SDK 已经放弃重试：走运行期自己的退避重连，而不是等用户点面板。
-      if (connection.status().state === 'failed') {
-        this.#scheduleRetry();
-        return;
-      }
-      if (connection.looksStalled?.() !== true) return;
-      this.#deps.logger.warn?.('长连接长时间没有入站帧，主动重建');
-      void connection.restart?.().catch((error: unknown) => {
-        this.#deps.logger.warn?.('重建长连接失败', error instanceof Error ? error.message : String(error));
-      });
+      // 仍处于 connected/reconnecting 时不做额外探测：空闲机器人没有事件是正常的。
+      if (connection.status().state === 'failed') this.#scheduleRetry();
     }, interval);
     if (typeof timer === 'object' && 'unref' in timer) timer.unref();
     this.#watchdogTimer = timer;

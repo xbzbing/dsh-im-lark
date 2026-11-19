@@ -111,6 +111,25 @@ test('交付卡：审批类不给按钮，只提示去 Web 端', () => {
   assert.match(JSON.stringify(card), /Web 端处理/);
 });
 
+test('交付卡：多问题不在 IM 里拆答，给出 Web 端提示', () => {
+  const card = renderDeliveryCard(
+    {
+      ...DELIVERY,
+      interaction: {
+        questions: [
+          { id: 'q1', question: '第一题', options: [{ label: '甲' }, { label: '乙' }] },
+          { id: 'q2', question: '第二题', options: [{ label: '丙' }] },
+        ],
+      },
+    },
+    { interactive: true },
+  );
+
+  assert.equal(buttonsOf(card).length, 0);
+  assert.match(JSON.stringify(card), /第一题/);
+  assert.match(JSON.stringify(card), /Web 端作答/);
+});
+
 test('已作答卡：不再有按钮，附上选择结果', () => {
   const delivery: Delivery = {
     ...DELIVERY,

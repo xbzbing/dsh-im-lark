@@ -5,9 +5,8 @@
  *
  * 1. **不重写握手**。鉴权、心跳、重连都交给 SDK；我们只订阅它暴露的状态回调
  *    与 `getConnectionStatus()`，把状态收敛成插件自己的取值。
- * 2. **活性检测**。SDK 的 `pingTimeout` 看门狗负责「连接假活」，但状态回调本身
- *    也可能停在 connected 上不动，所以运行期还会比对「最近一次收到帧的时间」，
- *    超窗口就主动重建连接（`looksStalled` 给运行期用）。
+ * 2. **活性交给 SDK**。心跳与假活由 SDK 的 `pingTimeout` 看门狗处理；本层不靠
+ *    「多久没收到业务事件」猜断线（空闲机器人本来就没有事件），只如实合并状态。
  * 3. **事件只入队**。平台要求 3 秒内处理完事件，超时会重推；这里 handler 只做
  *    形状校验与入队，重活（下载媒体、交核心）由运行期异步做。
  */
@@ -84,15 +83,12 @@ export interface LarkConnectionPort {
   start(handlers: LarkConnectionHandlers): Promise<void>;
   stop(): void;
   status(): LarkConnectionStatus;
-  /** 状态说连着但长期没有入站帧；运行期据此主动重建连接。 */
-  looksStalled?(): boolean;
-  restart?(): Promise<void>;
 }
 
 /** SDK 的握手可能在没有任何回调的情况下挂住，这里给一个上限。 */
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 20_000;
 
-/** 看门狗窗口：ping 间隔 120 秒，45 秒没有任何入站帧就判死。 */
+/** SDK 的 pong 超时窗口（秒）：45 秒没有心跳响应就判死，与业务事件无关。 */
 const DEFAULT_PING_TIMEOUT_SEC = 45;
 
 /** 握手等待的轮询间隔。 */
@@ -103,7 +99,6 @@ export class LarkConnection implements LarkConnectionPort {
   readonly #now: () => number;
   #client: WsClientLike | null = null;
   #status: LarkConnectionStatus;
-  #handlers: LarkConnectionHandlers | null = null;
   /** `stop()` 之后到达的回调一律忽略，避免「关掉又活过来」。 */
   #stopped = false;
   /** 每次 start 递增：旧连接的回调认不出新代次就不生效。 */
@@ -120,7 +115,6 @@ export class LarkConnection implements LarkConnectionPort {
   }
 
   async start(handlers: LarkConnectionHandlers): Promise<void> {
-    this.#handlers = handlers;
     this.#stopped = false;
     this.#generation += 1;
     const generation = this.#generation;
@@ -200,30 +194,7 @@ export class LarkConnection implements LarkConnectionPort {
     this.#stopped = true;
     this.#generation += 1;
     this.#closeClient(true);
-    this.#handlers = null;
     this.#setStatus({ state: 'idle', reconnectAttempts: 0, lastError: undefined }, '主动断开');
-  }
-
-  /** 运行期发现连接假活时调用：重建客户端，但保留最近错误供面板显示。 */
-  async restart(): Promise<void> {
-    const handlers = this.#handlers;
-    if (!handlers) {
-      this.#options.logger?.warn?.('连接尚未建立，忽略重启请求');
-      return;
-    }
-    await this.start(handlers);
-  }
-
-  /**
-   * 「连接假活」判定：状态说连着，但距上次收到帧超过了窗口。
-   *
-   * 返回 true 时调用方应 `restart()`。窗口默认取看门狗的两倍，给心跳留一次余量。
-   */
-  looksStalled(windowMs = (this.#options.pingTimeoutSec ?? DEFAULT_PING_TIMEOUT_SEC) * 2 * 1000): boolean {
-    if (this.#status.state !== 'connected') return false;
-    const last = this.#status.lastFrameAt;
-    if (last === undefined) return false;
-    return this.#now() - last > windowMs;
   }
 
   /**

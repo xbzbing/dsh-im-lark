@@ -252,12 +252,11 @@ export class OutboundChannel {
         throw new LarkFailure({ kind: 'too-long', message: `图片超过 ${Math.round(MAX_UPLOAD_IMAGE_BYTES / 1024 / 1024)} MB：${part.label}` });
       }
       const uploaded = await this.#api.uploadImage({ bytes, fileName: part.label });
-      const result = await this.#api.createMessage({
-        chatId,
-        msgType: 'image',
-        content: JSON.stringify({ image_key: uploaded.imageKey }),
-        options: { uuid },
-      });
+      const content = JSON.stringify({ image_key: uploaded.imageKey });
+      const result =
+        replyTo === undefined
+          ? await this.#api.createMessage({ chatId, msgType: 'image', content, options: { uuid } })
+          : await this.#api.replyMessage({ messageId: replyTo, msgType: 'image', content, options: { uuid } });
       return result.messageId;
     }
 
@@ -270,12 +269,11 @@ export class OutboundChannel {
       fileName: part.label,
       fileType: part.fileType ?? fileTypeOf(part.label),
     });
-    const result = await this.#api.createMessage({
-      chatId,
-      msgType: 'file',
-      content: JSON.stringify({ file_key: uploaded.fileKey }),
-      options: { uuid },
-    });
+    const content = JSON.stringify({ file_key: uploaded.fileKey });
+    const result =
+      replyTo === undefined
+        ? await this.#api.createMessage({ chatId, msgType: 'file', content, options: { uuid } })
+        : await this.#api.replyMessage({ messageId: replyTo, msgType: 'file', content, options: { uuid } });
     return result.messageId;
   }
 
@@ -286,10 +284,10 @@ export class OutboundChannel {
     return receipt;
   }
 
-  #fail(deliveryId: string, code: OutboundErrorCode, error: string): OutboundReceipt {
-    const receipt: OutboundReceipt = { messageIds: [], messagesSent: 0, errorCode: code, error };
-    remember(this.#receipts, deliveryId, receipt, RECEIPTS_MAX);
-    return receipt;
+  #fail(_deliveryId: string, code: OutboundErrorCode, error: string): OutboundReceipt {
+    // 失败不写幂等表：这张表只用来「同 id 不重复发成功内容」，
+    // 写进去既不会被命中（deliver 只复用成功回执），还会挤掉真正需要的成功记录。
+    return { messageIds: [], messagesSent: 0, errorCode: code, error };
   }
 
   #rememberProgress(deliveryId: string, progress: Progress): void {

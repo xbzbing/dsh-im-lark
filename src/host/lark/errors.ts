@@ -80,6 +80,11 @@ function kindOfCode(code: number): LarkFailureKind | undefined {
   return undefined;
 }
 
+/** 平台业务码 → 已分类的失败；SDK 不 reject 业务错误，识别后必须按码定性。 */
+export function failureOfCode(code: number, message = '平台返回错误'): LarkFailure {
+  return new LarkFailure({ kind: kindOfCode(code) ?? 'other', code, message });
+}
+
 /** 从任意抛出物里抠出 HTTP 状态与平台错误码（axios / SDK / 自造错误都可能）。 */
 function probe(error: unknown): { status?: number; code?: number; message?: string; retryAfterMs?: number } {
   const seen = new Set<unknown>();

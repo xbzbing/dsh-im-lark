@@ -34,8 +34,8 @@ export interface PanelDeps {
   settings: LocalConfigStore;
   config: NormalizedConfig;
   logger: PluginLogger;
-  /** 自检成功时把机器人身份交回入口（@ 提及需要它）。 */
-  onProbe?: (check: LarkCredentialCheck) => void;
+  /** 自检成功时把机器人身份交回入口（@ 提及需要它）；带上是哪个 App。 */
+  onProbe?: (check: LarkCredentialCheck, app: LarkCredentials) => void;
   /** 测试注入；默认用真实网络。 */
   probe?: typeof probeCredentials;
 }
@@ -140,8 +140,9 @@ export async function handleEndpoint(deps: PanelDeps, endpoint: string, payload:
         throw codedError('先填写 App ID 与 App Secret', 'invalid-config');
       }
       const probe = deps.probe ?? probeCredentials;
-      const result: LarkCredentialCheck = await probe({ app: { appId, appSecret, domain } });
-      deps.onProbe?.(result);
+      const app: LarkCredentials = { appId, appSecret, domain };
+      const result: LarkCredentialCheck = await probe({ app });
+      deps.onProbe?.(result, app);
       return { check: result };
     }
 

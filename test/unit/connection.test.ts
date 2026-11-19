@@ -165,7 +165,7 @@ test('连接：事件回调把原始事件交给调用方', async () => {
   assert.equal(actions.length, 1);
 });
 
-test('连接：收到帧会刷新 lastFrameAt，超过窗口判定为假活', async () => {
+test('连接：收到帧会刷新 lastFrameAt（仅供诊断）', async () => {
   const { connection, handlers, clock } = await connectedConnection();
   const before = connection.status().lastFrameAt;
   assert.ok(before !== undefined);
@@ -173,12 +173,6 @@ test('连接：收到帧会刷新 lastFrameAt，超过窗口判定为假活', as
   clock.advance(5_000);
   handlers[EVENT_MESSAGE_RECEIVE]({ event: { message: { message_id: 'om_2' } } });
   assert.equal(connection.status().lastFrameAt, before + 5_000);
-
-  // 窗口默认是看门狗（45 秒）的两倍：90 秒内不算假活。
-  clock.advance(60_000);
-  assert.equal(connection.looksStalled(), false);
-  clock.advance(40_000);
-  assert.equal(connection.looksStalled(), true);
 });
 
 test('连接：断线进入 reconnecting，重连成功回到 connected', async () => {

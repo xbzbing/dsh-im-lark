@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { LarkFailure, retryDelayMs, toLarkFailure } from '../../src/host/lark/errors.ts';
+import { LarkFailure, failureOfCode, retryDelayMs, toLarkFailure } from '../../src/host/lark/errors.ts';
 
 test('错误分类：频控码与 429 都归到 rate-limited', () => {
   assert.equal(toLarkFailure({ code: 230020 }).kind, 'rate-limited');
@@ -27,6 +27,14 @@ test('错误分类：网络类异常可重试', () => {
   assert.equal(toLarkFailure(new Error('socket hang up')).kind, 'network');
   assert.equal(toLarkFailure({ response: { status: 503 } }).kind, 'network');
   assert.equal(toLarkFailure(new Error('socket hang up')).retriable, true);
+});
+
+test('错误分类：SDK 业务码先定性，不能再落回可重试的 other', () => {
+  assert.equal(failureOfCode(230025).kind, 'too-long');
+  assert.equal(failureOfCode(230025).retriable, false);
+  assert.equal(failureOfCode(99991661).kind, 'auth');
+  assert.equal(failureOfCode(230002).kind, 'forbidden');
+  assert.equal(failureOfCode(230011).kind, 'gone');
 });
 
 test('错误分类：认不出来的错误落到 other 且可重试一次', () => {

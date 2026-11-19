@@ -65,6 +65,8 @@ export async function apply(ctx: PluginContext, config: PluginConfig | unknown =
   let controller: StandaloneController | null = null;
   /** 机器人自己的 open_id：@ 提及要靠它区分「@机器人」与「@别人」。 */
   let botOpenId: string | undefined;
+  /** 这个 open_id 属于哪个 App：换应用/晚到的自检不能覆盖。 */
+  let botOpenIdFor: string | undefined;
 
   /** 当前是否应该把消息交给核心（面板开关开 + 服务在）。 */
   const coreEnabled = (): boolean => service !== undefined && settings.current.superagent;
@@ -114,6 +116,10 @@ export async function apply(ctx: PluginContext, config: PluginConfig | unknown =
     if (stack !== null && sameApp(stack.app, app)) return;
 
     teardown();
+    if (botOpenIdFor !== app.appId) {
+      botOpenId = undefined;
+      botOpenIdFor = app.appId;
+    }
     stack = createLarkStack({
       app,
       config: normalized,
@@ -162,7 +168,9 @@ export async function apply(ctx: PluginContext, config: PluginConfig | unknown =
   const learnBotIdentity = async (app: LarkCredentials): Promise<void> => {
     try {
       const check = await probeCredentials({ app });
-      if (check.ok && check.botOpenId !== undefined && check.botOpenId !== '') botOpenId = check.botOpenId;
+      if (check.ok && check.botOpenId !== undefined && check.botOpenId !== '' && botOpenIdFor === app.appId) {
+        botOpenId = check.botOpenId;
+      }
     } catch (error) {
       logger.debug?.('读取机器人身份失败', error instanceof Error ? error.message : String(error));
     }
@@ -192,19 +200,6 @@ export async function apply(ctx: PluginContext, config: PluginConfig | unknown =
     },
     'dsh-im-lark: 停止运行期',
   );
-
-  try {
-    await ensurePrivateDir(normalized.dataDir);
-    // 提前读一次主人身份：重启后核心可能在下一条入站消息之前就回交付。
-    await owners.get();
-  } catch (error) {
-    logger.error?.('初始化状态目录失败', error instanceof Error ? error.message : String(error));
-  }
-
-  // start 内部会走 onChange 建出第一份 stack 并接上事件去向。
-  await runtime.start().catch((error: unknown) => {
-    logger.error?.('运行期启动失败', error instanceof Error ? error.message : String(error));
-  });
 
   // 宿主里没有 mySuperagent 时不报错：只是「核心不可用」，面板据此禁用开关。
   injectOptional(ctx, 'mySuperagent', (scope) => {
@@ -251,8 +246,11 @@ export async function apply(ctx: PluginContext, config: PluginConfig | unknown =
     settings,
     config: normalized,
     logger,
-    onProbe: (check) => {
-      if (check.ok && check.botOpenId !== undefined && check.botOpenId !== '') botOpenId = check.botOpenId;
+    onProbe: (check, app) => {
+      if (check.ok && check.botOpenId !== undefined && check.botOpenId !== '' && stack?.app.appId === app.appId) {
+        botOpenId = check.botOpenId;
+        botOpenIdFor = app.appId;
+      }
     },
   });
 
@@ -272,6 +270,19 @@ export async function apply(ctx: PluginContext, config: PluginConfig | unknown =
         `收件人：${owner === null ? '还没有主人（先在飞书里私聊机器人）' : '已绑定'}`,
       ].join('\n');
     },
+  });
+
+  try {
+    await ensurePrivateDir(normalized.dataDir);
+    // 提前读一次主人身份：重启后核心可能在下一条入站消息之前就回交付。
+    await owners.get();
+  } catch (error) {
+    logger.error?.('初始化状态目录失败', error instanceof Error ? error.message : String(error));
+  }
+
+  // start 内部会走 onChange 建出第一份 stack 并接上事件去向。
+  await runtime.start().catch((error: unknown) => {
+    logger.error?.('运行期启动失败', error instanceof Error ? error.message : String(error));
   });
 
   logger.info?.(`飞书桥已加载（连接状态：${runtime.status().connection.state}）`);

@@ -292,6 +292,22 @@ test('交付：图片与文件先上传再发，图片消息带 image_key', asyn
   assert.deepEqual(JSON.parse(fileMessage!.content), { file_key: 'file_key_1' });
 });
 
+test('交付：纯图片也走 reply，引用不被丢掉', async () => {
+  const { api, sent } = fakeApi();
+  const channel = new OutboundChannel({ api, chatId: 'oc_1', maxText: 2000 });
+
+  await channel.deliver({
+    deliveryId: 'dlv_img_reply',
+    text: '',
+    replyTo: 'om_parent',
+    images: [{ bytes: new Uint8Array([1, 2, 3]), fileName: '截图.png' }],
+  });
+
+  assert.equal(sent[0]!.kind, 'reply');
+  assert.equal(sent[0]!.messageId, 'om_parent');
+  assert.equal(sent[0]!.msgType, 'image');
+});
+
 test('交付：超过上传上限的文件在本地就拦下，换成 too-long', async () => {
   const { api, uploads } = fakeApi();
   const channel = new OutboundChannel({ api, chatId: 'oc_1', maxText: 2000 });

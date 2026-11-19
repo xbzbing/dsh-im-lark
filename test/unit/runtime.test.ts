@@ -196,39 +196,38 @@ test('运行期：初次连接失败后按退避自动重试，成功后不再�
   });
 });
 
-test('运行期：看门狗发现假活时重建连接，停机后停止检查', async () => {
+test('运行期：连接落 failed 后按退避重连，停机后停止检查', async () => {
   await withTempDir(async (dir) => {
     const config = normalizePluginConfig({ dataDir: dir.path });
     const settings = new LocalConfigStore({ dataDir: dir.path, config });
     const credentials = new CredentialStore({ dataDir: dir.path });
     await credentials.save(APP);
 
-    let restarts = 0;
+    let attempts = 0;
     const runtime = new LarkRuntime({
       config,
       logger: {},
       credentials,
       settings,
       watchdogMs: 5,
+      retryBaseMs: 5,
       createConnection: () => ({
-        async start() {},
-        stop() {},
-        status: () => ({ state: 'connected' as const, since: 0, reconnectAttempts: 0 }),
-        looksStalled: () => true,
-        async restart() {
-          restarts += 1;
+        async start() {
+          attempts += 1;
         },
+        stop() {},
+        status: () => ({ state: 'failed' as const, since: 0, reconnectAttempts: 0, lastError: 'down' }),
       }),
     });
 
     await runtime.start();
-    await new Promise((resolve) => setTimeout(resolve, 25));
-    assert.ok(restarts >= 1);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.ok(attempts >= 2, '失败状态应触发重连');
 
     runtime.stop();
-    const seen = restarts;
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    assert.equal(restarts, seen);
+    const seen = attempts;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(attempts, seen);
   });
 });
 
