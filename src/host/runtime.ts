@@ -245,7 +245,13 @@ export class LarkRuntime {
     this.#stopWatchdog();
     const timer = setInterval(() => {
       const connection = this.#connection;
-      if (connection?.looksStalled?.() !== true) return;
+      if (connection === null) return;
+      // SDK 已经放弃重试：走运行期自己的退避重连，而不是等用户点面板。
+      if (connection.status().state === 'failed') {
+        this.#scheduleRetry();
+        return;
+      }
+      if (connection.looksStalled?.() !== true) return;
       this.#deps.logger.warn?.('长连接长时间没有入站帧，主动重建');
       void connection.restart?.().catch((error: unknown) => {
         this.#deps.logger.warn?.('重建长连接失败', error instanceof Error ? error.message : String(error));
