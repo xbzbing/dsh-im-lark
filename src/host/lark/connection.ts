@@ -84,6 +84,9 @@ export interface LarkConnectionPort {
   start(handlers: LarkConnectionHandlers): Promise<void>;
   stop(): void;
   status(): LarkConnectionStatus;
+  /** 状态说连着但长期没有入站帧；运行期据此主动重建连接。 */
+  looksStalled?(): boolean;
+  restart?(): Promise<void>;
 }
 
 /** SDK 的握手可能在没有任何回调的情况下挂住，这里给一个上限。 */
@@ -297,12 +300,14 @@ export class LarkConnection implements LarkConnectionPort {
     const ready = new Promise<void>((resolve, reject) => {
       const poll = () => {
         if (settled) return;
-        if (this.#status.state === 'connected') {
+        // onReady 回调可能丢失：以 SDK 的实时状态兜底，避免「实际已连上却判超时」。
+        const state = this.#withLiveState().state;
+        if (state === 'connected') {
           settled = true;
           resolve();
           return;
         }
-        if (this.#status.state === 'failed') {
+        if (state === 'failed') {
           settled = true;
           reject(new Error(this.#status.lastError ?? '长连接建立失败'));
           return;
@@ -338,6 +343,10 @@ export class LarkConnection implements LarkConnectionPort {
     }
 
     if (!isCurrent()) throw new Error('连接已失效');
+    // 状态回调丢了也要让本地状态与事实一致。
+    if (this.#status.state !== 'connected') {
+      this.#setStatus({ state: 'connected', lastError: undefined }, '握手完成（状态回调缺失）');
+    }
   }
 }
 

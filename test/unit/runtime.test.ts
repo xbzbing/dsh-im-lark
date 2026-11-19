@@ -151,6 +151,87 @@ test('运行期：手动重连先断后连；未连接状态下不重复建连�
   });
 });
 
+test('运行期：初次连接失败后按退避自动重试，成功后不再重试', async () => {
+  await withTempDir(async (dir) => {
+    const config = normalizePluginConfig({ dataDir: dir.path });
+    const settings = new LocalConfigStore({ dataDir: dir.path, config });
+    const credentials = new CredentialStore({ dataDir: dir.path });
+    await credentials.save(APP);
+
+    let attempts = 0;
+    let connected = false;
+    const runtime = new LarkRuntime({
+      config,
+      logger: {},
+      credentials,
+      settings,
+      retryBaseMs: 5,
+      createConnection: () => ({
+        async start() {
+          attempts += 1;
+          if (attempts === 1) throw new Error('network down');
+          connected = true;
+        },
+        stop() {
+          connected = false;
+        },
+        status: () => ({ state: connected ? ('connected' as const) : ('failed' as const), since: 0, reconnectAttempts: 0 }),
+      }),
+    });
+
+    await runtime.start();
+    assert.equal(attempts, 1);
+    assert.match(runtime.status().lastError ?? '', /network down/);
+
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assert.equal(attempts, 2);
+    assert.equal(runtime.status().connection.state, 'connected');
+
+    // 成功之后不再继续重试。
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(attempts, 2);
+
+    runtime.stop();
+    assert.equal(connected, false);
+  });
+});
+
+test('运行期：看门狗发现假活时重建连接，停机后停止检查', async () => {
+  await withTempDir(async (dir) => {
+    const config = normalizePluginConfig({ dataDir: dir.path });
+    const settings = new LocalConfigStore({ dataDir: dir.path, config });
+    const credentials = new CredentialStore({ dataDir: dir.path });
+    await credentials.save(APP);
+
+    let restarts = 0;
+    const runtime = new LarkRuntime({
+      config,
+      logger: {},
+      credentials,
+      settings,
+      watchdogMs: 5,
+      createConnection: () => ({
+        async start() {},
+        stop() {},
+        status: () => ({ state: 'connected' as const, since: 0, reconnectAttempts: 0 }),
+        looksStalled: () => true,
+        async restart() {
+          restarts += 1;
+        },
+      }),
+    });
+
+    await runtime.start();
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.ok(restarts >= 1);
+
+    runtime.stop();
+    const seen = restarts;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(restarts, seen);
+  });
+});
+
 test('运行期：停机后不再接受操作，事件也不再下发', async () => {
   await withTempDir(async (dir) => {
     const { runtime, connections } = await harness(dir.path);

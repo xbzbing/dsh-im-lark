@@ -150,6 +150,8 @@ export interface OwnerMessageDraft {
   /** 渠道内唯一的去重键。 */
   messageId: string;
   sender: string;
+  /** 消息所在会话。**桥内部使用**：协议 v1 没有这个字段，核心解析时会忽略。 */
+  chatId?: string;
   text: string;
   at: number;
   replyTo?: string;

@@ -50,6 +50,11 @@ export class SeenStore {
     return true;
   }
 
+  /** 处理失败时撤回认领，让平台重推的消息还能再试一次。 */
+  release(key: string): void {
+    this.#seen.delete(key);
+  }
+
   /** 只查不写；用于调试与面板展示。 */
   has(key: string): boolean {
     const previous = this.#seen.get(key);

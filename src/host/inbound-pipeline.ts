@@ -35,6 +35,10 @@ export interface InboundPipelineOptions {
   ownerOpenId?: () => string | undefined;
   /** 核心声明的可选能力，决定要不要下载图片/文件。 */
   features?: () => readonly string[];
+  /** 核心的 owner 判定（features 含 owner-lookup 时）：明确为 false 就不为这条消息下载媒体。 */
+  isOwner?: (sender: string) => boolean | undefined;
+  /** 核心确认主人后回调：入口据此镜像 owner.json，供 `/lark` 与 CLI 主动发送。 */
+  onOwner?: (sender: string, chatId: string, chatType: 'p2p' | 'group') => void;
   now?: () => number;
   /** 没有核心时的去处（独立模式）。 */
   fallback?: (message: LarkInboundMessage, draft: OwnerMessageDraft) => Promise<void>;
@@ -49,6 +53,8 @@ export class InboundPipeline {
   readonly #botOpenId: () => string | undefined;
   readonly #ownerOpenId: () => string | undefined;
   readonly #features: () => readonly string[];
+  readonly #isOwner: ((sender: string) => boolean | undefined) | undefined;
+  readonly #onOwner: ((sender: string, chatId: string, chatType: 'p2p' | 'group') => void) | undefined;
   readonly #now: () => number;
   readonly #fallback: InboundPipelineOptions['fallback'];
   #chain: Promise<void> = Promise.resolve();
@@ -62,6 +68,8 @@ export class InboundPipeline {
     this.#botOpenId = options.botOpenId ?? (() => undefined);
     this.#ownerOpenId = options.ownerOpenId ?? (() => undefined);
     this.#features = options.features ?? (() => []);
+    this.#isOwner = options.isOwner;
+    this.#onOwner = options.onOwner;
     this.#now = options.now ?? Date.now;
     this.#fallback = options.fallback;
   }
@@ -75,6 +83,9 @@ export class InboundPipeline {
     }
 
     const { message, body } = parsed;
+    if (this.#isOwner?.(message.senderOpenId) === true) {
+      this.#onOwner?.(message.senderOpenId, message.chatId, message.chatType);
+    }
     const owner = this.#ownerOpenId();
     if (owner !== undefined && owner !== '' && message.senderOpenId !== owner) {
       this.#logger.debug?.('非主人消息，忽略', message.senderOpenId);
@@ -82,12 +93,21 @@ export class InboundPipeline {
     }
 
     // 去重按 message_id（官方明确不要用 event_id）。
-    if (!this.#seen.claim(`${message.chatId}:${message.messageId}`)) {
+    const key = `${message.chatId}:${message.messageId}`;
+    if (!this.#seen.claim(key)) {
       this.#logger.debug?.('重复投递，忽略', message.messageId);
       return;
     }
 
-    this.#enqueue(() => this.#processMessage(message, body));
+    this.#enqueue(async () => {
+      try {
+        await this.#processMessage(message, body);
+      } catch (error) {
+        // 处理失败不算「已消费」：平台重推时还要能再进来。
+        this.#seen.release(key);
+        throw error;
+      }
+    });
   }
 
   /** 卡片回调入口：同样只解析与去重，作答进队列。 */
@@ -108,9 +128,14 @@ export class InboundPipeline {
     if (!this.#seen.claim(key)) return;
 
     this.#enqueue(async () => {
-      const result = await this.#bridge.applyCardAction(action);
-      if (!result.accepted && result.reason !== 'settled') {
-        this.#logger.debug?.('卡片作答未被接受', `${result.reason} ${result.detail ?? ''}`);
+      try {
+        const result = await this.#bridge.applyCardAction(action);
+        if (!result.accepted && result.reason !== 'settled') {
+          this.#logger.debug?.('卡片作答未被接受', `${result.reason} ${result.detail ?? ''}`);
+        }
+      } catch (error) {
+        this.#seen.release(key);
+        throw error;
       }
     });
   }
@@ -132,7 +157,6 @@ export class InboundPipeline {
       const draft = await this.#toDraft(message, body);
       if (draft === null) return;
 
-      this.#bridge.recordInbound(message.messageId);
       const result: AcceptResult = await this.#bridge.receive(draft);
       if (!result.accepted && result.reason === 'unknown' && this.#fallback !== undefined) {
         await this.#fallback(message, draft);
@@ -153,10 +177,14 @@ export class InboundPipeline {
     }
 
     const features = this.#features();
-    const canImages = features.includes('owner-images');
-    const canFiles = features.includes('owner-files');
-    if (!canImages && body.images.length > 0) notes.push('（收到图片，但当前未开启图片接收）');
-    if (!canFiles && body.files.length > 0) notes.push('（收到文件，但当前未开启文件接收）');
+    // 核心明确说「不是主人」时不为这条消息下载媒体；文字仍要上报，配对命令可能来自非主人。
+    const mediaAllowed = this.#isOwner?.(message.senderOpenId) !== false;
+    const canImages = mediaAllowed && features.includes('owner-images');
+    const canFiles = mediaAllowed && features.includes('owner-files');
+    if (!mediaAllowed && body.images.length > 0) notes.push('（非主人消息，未下载图片）');
+    else if (!canImages && body.images.length > 0) notes.push('（收到图片，但当前未开启图片接收）');
+    if (!mediaAllowed && body.files.length > 0) notes.push('（非主人消息，未下载文件）');
+    else if (!canFiles && body.files.length > 0) notes.push('（收到文件，但当前未开启文件接收）');
 
     const images = canImages ? await this.#downloadImages(message, body.images, notes) : [];
     const files = canFiles ? await this.#downloadFiles(message, body.files, notes) : [];
@@ -167,6 +195,7 @@ export class InboundPipeline {
     return {
       messageId: `${message.chatId}:${message.messageId}`,
       sender: message.senderOpenId,
+      chatId: message.chatId,
       text: text.slice(0, TEXT_MAX),
       at: message.createTime > 0 ? message.createTime : this.#now(),
       ...(message.parentId === undefined ? {} : { replyTo: message.parentId }),
@@ -283,7 +312,9 @@ export function sniffImageType(bytes: Uint8Array, contentType?: string): OwnerIm
 export function sanitizeFileName(name: string): string {
   const leaf = name.split(/[/\\]/).pop() ?? '';
   const cleaned = leaf.replace(/[\u0000-\u001f\u007f]/g, '').trim();
-  return cleaned === '' ? '未命名文件' : cleaned.slice(0, 200);
+  if (cleaned === '' || cleaned === '.' || cleaned === '..') return '未命名文件';
+  // 按码点截断，避免把代理对切成半个字符。
+  return Array.from(cleaned).slice(0, 200).join('');
 }
 
 function mediaTypeOfName(name: string): string | undefined {

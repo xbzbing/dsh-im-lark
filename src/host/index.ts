@@ -13,6 +13,7 @@
  */
 
 import { LocalConfigStore, normalizePluginConfig } from './config.ts';
+import { probeCredentials } from './state/credentials.ts';
 import type { PluginConfig } from './config.ts';
 import { injectOptional, resolveLogger } from './host-context.ts';
 import type { PluginContext } from './host-context.ts';
@@ -21,7 +22,7 @@ import { registerLarkCommand } from './command.ts';
 import { registerPanelRpc } from './panel-host.ts';
 import { sdkFactories } from './lark/sdk.ts';
 import type { LarkCredentials } from './lark/types.ts';
-import type { BridgeHandle, MySuperagentService } from './protocol.ts';
+import type { BridgeHandle, BridgeHealth, MySuperagentService } from './protocol.ts';
 import { LarkRuntime } from './runtime.ts';
 import type { RuntimeStatus } from './runtime.ts';
 import { createLarkStack } from './stack.ts';
@@ -44,15 +45,13 @@ export const inject: string[] = [];
 /**
  * 插件入口。
  *
- * **必须返回 void。** Cordis 会把 `apply` 的返回值当作 effect 注册：返回一个普通
- * 对象会抛 `Invalid effect`，整个 fiber 直接 failed。运行期的启停一律交给
- * `ctx.effect` 注册的清理函数。
+ * **不得返回普通对象。** Cordis 会把 `apply` 的返回值当作 effect 注册：返回一个
+ * 普通对象会抛 `Invalid effect`，整个 fiber 直接 failed。异步初始化放在清理函数
+ * 登记之后；运行期的启停一律交给 `ctx.effect` 注册的清理函数。
  */
 export async function apply(ctx: PluginContext, config: PluginConfig | unknown = {}): Promise<void> {
   const logger = resolveLogger(ctx.logger, name);
   const normalized = normalizePluginConfig(config);
-
-  await ensurePrivateDir(normalized.dataDir);
 
   const credentials = new CredentialStore({ dataDir: normalized.dataDir, logger });
   const settings = new LocalConfigStore({ dataDir: normalized.dataDir, config: normalized, logger });
@@ -64,14 +63,23 @@ export async function apply(ctx: PluginContext, config: PluginConfig | unknown =
   let service: MySuperagentService | undefined;
   let coreHandle: BridgeHandle | undefined;
   let controller: StandaloneController | null = null;
-  /** 当前消息是否交给核心（面板开关开 + 服务在）。 */
-  let coreActive = false;
+  /** 机器人自己的 open_id：@ 提及要靠它区分「@机器人」与「@别人」。 */
+  let botOpenId: string | undefined;
+
+  /** 当前是否应该把消息交给核心（面板开关开 + 服务在）。 */
+  const coreEnabled = (): boolean => service !== undefined && settings.current.superagent;
 
   const registerCore = (): void => {
-    if (service === undefined || stack === null || coreHandle !== undefined) return;
-    coreHandle = service.bridges.register(stack.bridge.provider);
-    stack.bridge.attach(coreHandle);
-    logger.info?.('已接入「我的超级助理」');
+    if (!coreEnabled() || stack === null || coreHandle !== undefined) return;
+    try {
+      const handle = service!.bridges.register(stack.bridge.provider);
+      coreHandle = handle;
+      stack.bridge.attach(handle);
+      logger.info?.('已接入「我的超级助理」');
+    } catch (error) {
+      // account 形状不合法、同一 account 重复注册等；不把插件带崩，面板仍可见。
+      logger.warn?.('接入「我的超级助理」失败', error instanceof Error ? error.message : String(error));
+    }
   };
 
   const unregisterCore = (): void => {
@@ -84,13 +92,10 @@ export async function apply(ctx: PluginContext, config: PluginConfig | unknown =
 
   /**
    * 两种模式互斥：开关开着且服务在才把消息交给核心，否则走独立模式。
-   * 只在新旧判定不同的时候动注册，避免每次保存设置都重注册一遍。
+   * 注册/摘除都做成幂等，凭据重建后可以按当前模式重新接上。
    */
   const applyRouting = (): void => {
-    const should = service !== undefined && settings.current.superagent;
-    if (should === coreActive) return;
-    coreActive = should;
-    if (should) registerCore();
+    if (coreEnabled()) registerCore();
     else unregisterCore();
   };
 
@@ -115,17 +120,52 @@ export async function apply(ctx: PluginContext, config: PluginConfig | unknown =
       logger,
       typing: settings.current.typingIndicator,
       // 独立模式也要下载媒体：核心的 features 只在核心模式下有意义。
-      features: () => (coreActive ? service?.protocol.features ?? [] : ['owner-images', 'owner-files']),
-      botOpenId: () => undefined,
+      features: () => (coreEnabled() ? service?.protocol.features ?? [] : ['owner-images', 'owner-files']),
+      // 核心声明 owner-lookup 时，非主人消息不下载媒体；没有核心/没有该能力时交给独立模式自己判。
+      onOwner: (sender, chatId, chatType) => {
+        // 主动发送优先单聊：群里说话只更新「还没有任何会话」时的兜底。
+        const current = owners.peek();
+        if (current !== null && current.openId === sender && chatType !== 'p2p') return;
+        void owners.remember(sender, chatId).catch((error: unknown) => {
+          logger.debug?.('镜像主人身份失败', error instanceof Error ? error.message : String(error));
+        });
+      },
+      isOwner: (sender) => {
+        if (!coreEnabled() || service?.protocol.features?.includes('owner-lookup') !== true) return undefined;
+        try {
+          return coreHandle?.isOwner(sender);
+        } catch {
+          // 核心判定失败时退回「先收下」，别让一条消息卡死整条队列。
+          return undefined;
+        }
+      },
+      botOpenId: () => botOpenId,
       ownerOpenId: () => owners.peek()?.openId,
+      chatFor: (sender) => {
+        const owner = owners.peek();
+        return owner !== null && owner.openId === sender ? owner.chatId : undefined;
+      },
       settings: () => settings.current,
       bindings,
       owners,
       controller: () => controller,
       ownerLabel: () => tailOf(app.appId),
+      health: () => bridgeHealth(runtime.status().connection.state),
     });
     runtime.setSink(stack.sink);
     applyRouting();
+    // 连接关着的时候不查：测试与纯离线环境不该因为一次自检去联网。
+    if (settings.current.enabled) void learnBotIdentity(app);
+  };
+
+  /** 查一次机器人身份：@ 提及要靠它区分「@机器人」与「@别人」；失败只降级不报错。 */
+  const learnBotIdentity = async (app: LarkCredentials): Promise<void> => {
+    try {
+      const check = await probeCredentials({ app });
+      if (check.ok && check.botOpenId !== undefined && check.botOpenId !== '') botOpenId = check.botOpenId;
+    } catch (error) {
+      logger.debug?.('读取机器人身份失败', error instanceof Error ? error.message : String(error));
+    }
   };
 
   const runtime = new LarkRuntime({
@@ -144,9 +184,7 @@ export async function apply(ctx: PluginContext, config: PluginConfig | unknown =
     onSettings: () => applyRouting(),
   });
 
-  // 先 start：onChange 里会建出第一份 stack 并接上事件去向。
-  await runtime.start();
-
+  // 先登记清理，再跑异步初始化：启动失败或宿主提前卸载都不会留下半截运行期。
   ctx.effect?.(
     () => () => {
       runtime.stop();
@@ -154,6 +192,19 @@ export async function apply(ctx: PluginContext, config: PluginConfig | unknown =
     },
     'dsh-im-lark: 停止运行期',
   );
+
+  try {
+    await ensurePrivateDir(normalized.dataDir);
+    // 提前读一次主人身份：重启后核心可能在下一条入站消息之前就回交付。
+    await owners.get();
+  } catch (error) {
+    logger.error?.('初始化状态目录失败', error instanceof Error ? error.message : String(error));
+  }
+
+  // start 内部会走 onChange 建出第一份 stack 并接上事件去向。
+  await runtime.start().catch((error: unknown) => {
+    logger.error?.('运行期启动失败', error instanceof Error ? error.message : String(error));
+  });
 
   // 宿主里没有 mySuperagent 时不报错：只是「核心不可用」，面板据此禁用开关。
   injectOptional(ctx, 'mySuperagent', (scope) => {
@@ -168,7 +219,6 @@ export async function apply(ctx: PluginContext, config: PluginConfig | unknown =
       () => () => {
         if (service === injected) service = undefined;
         runtime.setCoreAvailable(false);
-        coreActive = false;
         unregisterCore();
       },
       'dsh-im-lark: 核心撤销',
@@ -195,7 +245,16 @@ export async function apply(ctx: PluginContext, config: PluginConfig | unknown =
     );
   }
 
-  registerPanelRpc(ctx, { runtime, credentials, settings, config: normalized, logger });
+  registerPanelRpc(ctx, {
+    runtime,
+    credentials,
+    settings,
+    config: normalized,
+    logger,
+    onProbe: (check) => {
+      if (check.ok && check.botOpenId !== undefined && check.botOpenId !== '') botOpenId = check.botOpenId;
+    },
+  });
 
   registerLarkCommand(ctx, {
     logger,
@@ -225,4 +284,19 @@ function tailOf(appId: string): string {
 
 function sameApp(a: LarkCredentials, b: LarkCredentials): boolean {
   return a.appId === b.appId && a.appSecret === b.appSecret && a.domain === b.domain;
+}
+
+/** 连接状态 → 核心可理解的健康度：断线时别让核心继续排队。 */
+function bridgeHealth(state: string): BridgeHealth {
+  switch (state) {
+    case 'connected':
+      return { state: 'ok' };
+    case 'failed':
+      return { state: 'down', code: 'network', reason: '飞书长连接已断开' };
+    case 'connecting':
+    case 'reconnecting':
+      return { state: 'degraded', code: 'network', reason: '飞书长连接正在重连' };
+    default:
+      return { state: 'down', code: 'other', reason: '飞书长连接未启动' };
+  }
 }

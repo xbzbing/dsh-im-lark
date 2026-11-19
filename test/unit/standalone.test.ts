@@ -183,6 +183,18 @@ test('独立模式：群里没认主人时不抢主人身份', async () => {
   });
 });
 
+test('独立模式：主人在群里说话，不改变主动发送的目标单聊', async () => {
+  await withTempDir(async (dir) => {
+    const { chat, owners } = await harness(dir.path);
+    await owners.claim('ou_owner', 'oc_1');
+
+    const group = inbound({ chatType: 'group', chatId: 'oc_group' });
+    await chat.handleInbound(group, draftOf(group, '群里问一句'));
+
+    assert.equal((await owners.get())?.chatId, 'oc_1');
+  });
+});
+
 test('独立模式：/help 直接回文案，不进会话', async () => {
   await withTempDir(async (dir) => {
     const { chat, prompts, deliveries } = await harness(dir.path);

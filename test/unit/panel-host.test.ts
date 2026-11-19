@@ -73,6 +73,7 @@ test('面板：status 只回尾号，不回 Secret', async () => {
     assert.equal(JSON.stringify(snapshot).includes(APP.appSecret), false);
     assert.equal(JSON.stringify(snapshot).includes(APP.appId), false);
     assert.equal(snapshot.settings.typingIndicator, true);
+    assert.equal('questionReminders' in snapshot.settings, false);
   });
 });
 
@@ -100,6 +101,17 @@ test('面板：首次保存缺 Secret 时明确报错，不落半份凭据', asy
     await assert.rejects(
       handleEndpoint(deps, ENDPOINTS.CREDENTIALS_SAVE, { appId: 'cli_x' }),
       /App Secret 不能为空/,
+    );
+    assert.equal(await credentials.load(), null);
+  });
+});
+
+test('面板：App ID 形状不对时拒绝保存', async () => {
+  await withTempDir(async (dir) => {
+    const { deps, credentials } = await harness(dir.path, { withCredentials: false });
+    await assert.rejects(
+      handleEndpoint(deps, ENDPOINTS.CREDENTIALS_SAVE, { appId: 'bad id!', appSecret: 'secret-1' }),
+      /App ID 格式不正确/,
     );
     assert.equal(await credentials.load(), null);
   });
@@ -135,14 +147,10 @@ test('面板：设置只接受白名单字段，越界整数被拒', async () =>
   await withTempDir(async (dir) => {
     const { deps, calls } = await harness(dir.path);
 
-    await handleEndpoint(deps, ENDPOINTS.SETTINGS_SET, {
-      typingIndicator: false,
-      questionDelayMinutes: 0,
-      longTaskThresholdMinutes: 45,
-    });
-    assert.deepEqual(calls.applied, [{ typingIndicator: false, questionDelayMinutes: 0, longTaskThresholdMinutes: 45 }]);
+    await handleEndpoint(deps, ENDPOINTS.SETTINGS_SET, { typingIndicator: false, replyStatus: true });
+    assert.deepEqual(calls.applied, [{ typingIndicator: false, replyStatus: true }]);
 
-    await assert.rejects(handleEndpoint(deps, ENDPOINTS.SETTINGS_SET, { questionDelayMinutes: 999 }), /0–120/);
+    await assert.rejects(handleEndpoint(deps, ENDPOINTS.SETTINGS_SET, { questionDelayMinutes: 999 }), /没有要保存的设置/);
     await assert.rejects(handleEndpoint(deps, ENDPOINTS.SETTINGS_SET, { enabled: 'yes' }), /布尔值/);
     await assert.rejects(handleEndpoint(deps, ENDPOINTS.SETTINGS_SET, {}), /没有要保存的设置/);
   });

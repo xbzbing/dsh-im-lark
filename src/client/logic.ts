@@ -69,24 +69,6 @@ export function isHostOlder(snapshot: unknown): boolean {
   return isRecord(snapshot) && typeof snapshot.contract === 'number' && snapshot.contract < PANEL_CONTRACT;
 }
 
-export interface SettingsDraft {
-  enabled: boolean;
-  superagent: boolean;
-  typingIndicator: boolean;
-  questionReminders: boolean;
-  questionDelayMinutes: number;
-  longTaskThresholdMinutes: number;
-  replyStatus: boolean;
-}
-
-/** 分钟数校验：返回错误文案或 null。 */
-export function validateMinutes(value: string, min: number, max: number): string | null {
-  if (value.trim() === '') return null;
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < min || parsed > max) return `请输入 ${min}–${max} 的整数`;
-  return null;
-}
-
 /** 状态点颜色：与宿主的 StateDot 语义对齐。 */
 export function dotOf(state: string): 'done' | 'ongoing' | 'warning' | 'error' | 'idle' {
   switch (state) {

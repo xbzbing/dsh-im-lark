@@ -11,7 +11,6 @@ test('凭据：保存后能读回，文件权限收紧到 0600', async () => {
   await withTempDir(async (dir) => {
     const store = new CredentialStore({ dataDir: dir.path });
     const summary = await store.save(APP);
-    assert.equal(summary.appId, APP.appId);
     assert.equal(summary.appIdTail, 'd4e5f6');
 
     const loaded = await store.load();

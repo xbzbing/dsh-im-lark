@@ -8,7 +8,7 @@ import {
   normalizeSettings,
   settingsPath,
 } from '../../src/host/config.ts';
-import { DEFAULT_LONG_TASK_MINUTES, DEFAULT_MAX_TEXT_CHARS } from '../../src/shared/limits.ts';
+import { DEFAULT_MAX_TEXT_CHARS } from '../../src/shared/limits.ts';
 import { withTempDir } from './helpers/temp.ts';
 
 test('配置：空对象拿到全部默认值，不抛错', () => {
@@ -17,7 +17,6 @@ test('配置：空对象拿到全部默认值，不抛错', () => {
   assert.equal(config.superagent, false);
   assert.equal(config.domain, 'feishu');
   assert.equal(config.maxText, DEFAULT_MAX_TEXT_CHARS);
-  assert.equal(config.longTaskThresholdMinutes, DEFAULT_LONG_TASK_MINUTES);
   assert.equal(config.directBusyMode, 'interrupt');
   assert.equal(config.rpcPath, 'dsh-im-lark');
   assert.equal(config.directWorkspaceId, undefined);
@@ -53,13 +52,12 @@ test('配置：空白字符串当作未设置（避免生成空目录名）', ()
 test('设置：磁盘内容只覆盖合法字段，其余沿用默认', () => {
   const config = normalizePluginConfig({});
   const settings = normalizeSettings(
-    { enabled: false, questionDelayMinutes: 0, directBusyMode: 'queue', longTaskThresholdMinutes: -5 },
+    { enabled: false, directBusyMode: 'queue', replyStatus: true },
     config,
   );
   assert.equal(settings.enabled, false);
-  assert.equal(settings.questionDelayMinutes, 0);
   assert.equal(settings.directBusyMode, 'queue');
-  assert.equal(settings.longTaskThresholdMinutes, defaultSettings(config).longTaskThresholdMinutes);
+  assert.equal(settings.replyStatus, true);
   assert.equal(settings.typingIndicator, true);
 });
 

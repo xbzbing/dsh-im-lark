@@ -30,7 +30,7 @@ export interface CredentialStoreOptions {
 /** 面板能看到的凭据摘要。 */
 export function summarize(appId: string, domain: LarkDomain): LarkCredentialSummary {
   const tail = appId.length > TAIL_LENGTH ? appId.slice(-TAIL_LENGTH) : appId;
-  return { appId, appIdTail: tail, domain };
+  return { appIdTail: tail, domain };
 }
 
 /** 收窄磁盘上的凭据：形状不对就当没配置。 */

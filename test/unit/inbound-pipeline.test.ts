@@ -14,6 +14,7 @@ interface SetupOptions {
   typing?: boolean;
   imageBytes?: Uint8Array;
   downloadFails?: boolean;
+  isOwner?: (sender: string) => boolean | undefined;
 }
 
 function setup(options: SetupOptions = {}) {
@@ -81,6 +82,7 @@ function setup(options: SetupOptions = {}) {
     typing: options.typing ?? true,
     ...(options.ownerOpenId === undefined ? {} : { ownerOpenId: () => options.ownerOpenId }),
     features: () => options.features ?? [],
+    ...(options.isOwner === undefined ? {} : { isOwner: options.isOwner }),
   });
 
   return { pipeline, bridge, api, received, answers, reactions, removed, patches, downloads };
@@ -193,6 +195,22 @@ test('流水线：核心没声明 owner-images 时不下载图片，也不带字
   assert.deepEqual(downloads, []);
   assert.equal(received.length, 1);
   assert.equal(received[0]!.images, undefined);
+});
+
+test('流水线：核心说发送者不是主人时，图片不下载但文字照常上报', async () => {
+  const { pipeline, received, downloads } = setup({
+    features: ['owner-images'],
+    isOwner: () => false,
+  });
+  pipeline.handleMessage(
+    messageEvent({ messageType: 'image', content: JSON.stringify({ image_key: 'img_1' }) }),
+  );
+  await pipeline.drain();
+
+  assert.deepEqual(downloads, []);
+  assert.equal(received.length, 1);
+  assert.equal(received[0]!.images, undefined);
+  assert.match(received[0]!.text, /非主人消息/);
 });
 
 test('流水线：核心声明 owner-images 时下载并按 base64 上报', async () => {

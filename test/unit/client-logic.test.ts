@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { PANEL_CONTRACT, RPC_CHANNEL } from '../../src/client/constants.ts';
-import { createRpcCall, dotOf, errorText, isContractMismatch, unwrapResult, validateMinutes } from '../../src/client/logic.ts';
+import { createRpcCall, dotOf, errorText, isContractMismatch, unwrapResult } from '../../src/client/logic.ts';
 import { fallbackTranslate } from '../../src/client/locales.ts';
 import { PANEL_CONTRACT as HOST_CONTRACT, RPC_CHANNEL as HOST_CHANNEL } from '../../src/shared/version.ts';
 
@@ -47,14 +47,6 @@ test('错误文案：连接类错误换成提示，其余保留宿主原文', ()
   assert.match(errorText(fallbackTranslate, { code: 'connection-unavailable', message: '' }), /刷新页面/);
   assert.equal(errorText(fallbackTranslate, new Error('App Secret 不正确')), 'App Secret 不正确');
   assert.equal(errorText(fallbackTranslate, new Error('')), fallbackTranslate('error.generic'));
-});
-
-test('分钟校验：只接受区间内的整数，空串交给上层判定', () => {
-  assert.equal(validateMinutes('45', 1, 1440), null);
-  assert.equal(validateMinutes('0', 0, 120), null);
-  assert.equal(validateMinutes('1441', 1, 1440), '请输入 1–1440 的整数');
-  assert.equal(validateMinutes('1.5', 1, 1440), '请输入 1–1440 的整数');
-  assert.equal(validateMinutes('', 1, 1440), null);
 });
 
 test('契约版本：对不上就提示重启', () => {

@@ -14,6 +14,7 @@ interface Fixture {
   bridge: ReturnType<typeof createLarkBridge>;
   patches: unknown[];
   api: LarkApi;
+  sentChatIds: string[];
   attach(handle: BridgeHandle): void;
   setReply(messageId: string): void;
 }
@@ -24,22 +25,25 @@ interface Fixture {
  * `operations()` 需要在调用发生的那一刻知道「这条操作属于哪次交付」，所以
  * 这里包一层 `deliver`：调用期间把当前交付记下来，假 API 据此标注。
  */
-function fixture(options: { maxText?: number } = {}): Fixture {
+function fixture(options: { maxText?: number; chatFor?: (sender: string) => string | undefined } = {}): Fixture {
   const operations: NativeOperation[] = [];
   const patches: unknown[] = [];
+  const sentChatIds: string[] = [];
   let current: Delivery | null = null;
   let sequence = 0;
 
   const api: LarkApi = {
     async createMessage(input) {
       sequence += 1;
+      sentChatIds.push(input.chatId);
       operations.push({ kind: 'send', deliveryId: current?.id ?? '', ...(current?.stream === undefined ? {} : { streamId: current.stream.id }) });
       assert.equal(input.msgType, 'interactive');
       return { messageId: `om_${sequence}` };
     },
-    async replyMessage(_input) {
+    async replyMessage(input) {
       sequence += 1;
       operations.push({ kind: 'send', deliveryId: current?.id ?? '', ...(current?.stream === undefined ? {} : { streamId: current.stream.id }) });
+      assert.equal(input.messageId, 'om_known');
       return { messageId: `om_${sequence}` };
     },
     async patchCard(input) {
@@ -62,7 +66,12 @@ function fixture(options: { maxText?: number } = {}): Fixture {
     },
   };
 
-  const bridge = createLarkBridge({ account: 'cli_test', api, maxText: options.maxText ?? 2000 });
+  const bridge = createLarkBridge({
+    account: 'cli_test',
+    api,
+    maxText: options.maxText ?? 2000,
+    ...(options.chatFor === undefined ? {} : { chatFor: options.chatFor }),
+  });
 
   const provider: BridgeProvider = {
     platform: bridge.provider.platform,
@@ -86,8 +95,18 @@ function fixture(options: { maxText?: number } = {}): Fixture {
     bridge,
     patches,
     api,
+    sentChatIds,
     attach: (handle) => bridge.attach(handle),
-    setReply: (messageId) => bridge.recordInbound(messageId),
+    setReply: (messageId) => {
+      void bridge.receive({
+        messageId: `oc_chat:${messageId}`,
+        sender: 'ou_owner',
+        chatId: 'oc_chat',
+        platformMessageId: messageId,
+        text: '这条会被引用',
+        at: 1,
+      });
+    },
   };
 }
 
@@ -158,13 +177,49 @@ test('桥：过期交付不产生平台调用', async () => {
 test('桥：只有引用过我们收到的消息时才用 reply', async () => {
   const { provider, operations, setReply } = fixture();
 
-  await provider.deliver({ ...DELIVERY, id: 'dlv_unknown', inReplyTo: 'om_unknown' });
+  // 核心回引用的是桥自己的 messageId，不是平台 id。
+  await provider.deliver({ ...DELIVERY, id: 'dlv_unknown', inReplyTo: 'oc_chat:om_unknown' });
   // 未知消息 id 交给 reply 会被平台拒，退回群发。
   assert.equal(operations().length, 1);
 
   setReply('om_known');
-  await provider.deliver({ ...DELIVERY, id: 'dlv_known', inReplyTo: 'om_known' });
+  await provider.deliver({ ...DELIVERY, id: 'dlv_known', inReplyTo: 'oc_chat:om_known' });
   assert.equal(operations().length, 2);
+});
+
+test('桥：核心用 open_id 当收件人时翻译成会话 id', async () => {
+  const { provider, bridge, sentChatIds } = fixture();
+  await bridge.receive({
+    messageId: 'oc_chat:om_1',
+    sender: 'ou_owner',
+    chatId: 'oc_chat',
+    platformMessageId: 'om_1',
+    text: '你好',
+    at: 1,
+  });
+
+  const receipt = await provider.deliver({ ...DELIVERY, recipient: 'ou_owner' });
+  assert.equal(receipt.status, 'sent');
+  assert.deepEqual(sentChatIds, ['oc_chat']);
+});
+
+test('桥：收件人没有会话映射时不发消息并回失败', async () => {
+  const { provider, operations } = fixture();
+  const receipt = await provider.deliver({ ...DELIVERY, recipient: 'ou_stranger' });
+
+  assert.equal(receipt.status, 'failed');
+  assert.equal(receipt.errorCode, 'other');
+  assert.equal(operations().length, 0);
+});
+
+test('桥：重启后还没收到消息时，从本机 owner 映射找回会话', async () => {
+  const { provider, sentChatIds } = fixture({
+    chatFor: (sender) => (sender === 'ou_owner' ? 'oc_seed' : undefined),
+  });
+  const receipt = await provider.deliver({ ...DELIVERY, recipient: 'ou_owner' });
+
+  assert.equal(receipt.status, 'sent');
+  assert.deepEqual(sentChatIds, ['oc_seed']);
 });
 
 test('桥：流式修订原地更新，迟到修订不产生操作', async () => {

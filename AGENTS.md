@@ -8,7 +8,7 @@
 
 ## 不能做的事
 
-1. **`apply()` 必须返回 `void`**，且只在里面做同步装配。异步初始化一律交给 `ctx.effect` 里的 promise，否则 Cordis 会报 `Invalid effect`。
+1. **`apply()` 不得返回普通对象**（Cordis 会当成 effect，报 `Invalid effect`）。可以是 `async`，但先登记 `ctx.effect` 清理，再 `await` 异步初始化；启动失败只记日志，不把插件带崩。
 2. **不引新依赖**。唯一允许的运行时依赖是 `@larksuiteoapi/node-sdk`（`scripts/verify-package.mjs` 会拦）。要加依赖先改白名单并在 ADR 里写理由。
 3. **不 import `dsh-my-superagent` 的类型**。桥接协议用本仓库 `src/host/bridge/` 里的最小结构类型描述；`dsh-my-superagent` 只作为 devDependency 出现在一致性测试里。
 4. **不在日志、面板快照、错误信息里出现 App Secret 或完整 App ID**。只允许 App ID 尾号六位。

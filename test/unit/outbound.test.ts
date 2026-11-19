@@ -215,6 +215,65 @@ test('交付：网络错误重试到上限后回 other，重投从断点续发',
   assert.equal(other.sent.length, 1);
 });
 
+test('交付：第二段失败后重投只发剩余段，不重复已发内容', async () => {
+  const base = fakeApi();
+  let calls = 0;
+  const api: LarkApi = {
+    ...base.api,
+    async createMessage(input) {
+      calls += 1;
+      if (calls >= 2 && calls <= 4) throw new LarkFailure({ kind: 'network', message: '断网' });
+      return base.api.createMessage(input);
+    },
+  };
+  const channel = new OutboundChannel({ api, chatId: 'oc_1', maxText: 30, sleep: async () => {} });
+  const text = '甲'.repeat(70);
+
+  const first = await channel.deliver({ deliveryId: 'dlv_resume', text });
+  assert.equal(first.errorCode, 'other');
+  assert.equal(first.messagesSent, 1);
+  assert.equal(base.sent.length, 1);
+
+  const retry = await channel.deliver({ deliveryId: 'dlv_resume', text });
+  assert.equal(retry.errorCode, undefined);
+  assert.ok(retry.messagesSent > 1);
+  // 第一次发了 1 条，重投只补后面的 2 条（总共 3 条，不重发第 1 条）。
+  assert.equal(base.sent.length, retry.messagesSent);
+});
+
+test('交付：分段超过上限直接拒绝，不刷屏', async () => {
+  const { api, sent } = fakeApi();
+  const channel = new OutboundChannel({ api, chatId: 'oc_1', maxText: 200 });
+
+  const receipt = await channel.deliver({ deliveryId: 'dlv_huge', text: '甲'.repeat(6_200) });
+  assert.equal(receipt.errorCode, 'too-long');
+  assert.match(receipt.error ?? '', /上限/);
+  assert.equal(sent.length, 0);
+});
+
+test('交付：同 id 重投但内容变了，不把新内容接在旧交付后面', async () => {
+  const base = fakeApi();
+  let calls = 0;
+  const api: LarkApi = {
+    ...base.api,
+    async createMessage(input) {
+      calls += 1;
+      if (calls >= 2 && calls <= 4) throw new LarkFailure({ kind: 'network', message: '断网' });
+      return base.api.createMessage(input);
+    },
+  };
+  const channel = new OutboundChannel({ api, chatId: 'oc_1', maxText: 30, sleep: async () => {} });
+
+  const first = await channel.deliver({ deliveryId: 'dlv_mix', text: '甲'.repeat(70) });
+  assert.equal(first.messagesSent, 1);
+
+  const before = base.sent.length;
+  const changed = await channel.deliver({ deliveryId: 'dlv_mix', text: '乙'.repeat(70) });
+  assert.equal(changed.errorCode, 'other');
+  assert.match(changed.error ?? '', /不一致/);
+  assert.equal(base.sent.length, before);
+});
+
 test('交付：图片与文件先上传再发，图片消息带 image_key', async () => {
   const { api, sent, uploads } = fakeApi();
   const channel = new OutboundChannel({ api, chatId: 'oc_1', maxText: 2000 });

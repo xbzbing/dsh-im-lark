@@ -14,7 +14,7 @@
 
 import { createHash } from 'node:crypto';
 
-import { CARD_BODY_BYTES_MAX, MAX_UPLOAD_FILE_BYTES, MAX_UPLOAD_IMAGE_BYTES, SEND_QPS, SEND_WINDOW_MS } from '../shared/limits.ts';
+import { CARD_BODY_BYTES_MAX, MAX_SEGMENTS, MAX_UPLOAD_FILE_BYTES, MAX_UPLOAD_IMAGE_BYTES, SEND_QPS, SEND_WINDOW_MS } from '../shared/limits.ts';
 import { cardBytes, cardContent, renderMarkdownCard } from './cards.ts';
 import type { CardTemplate } from './cards.ts';
 import type { LarkApi } from './lark/api.ts';
@@ -93,6 +93,8 @@ interface Part {
 interface Progress {
   parts: number;
   messageIds: string[];
+  /** 首次发送时的分段指纹：重投时内容变了就不能把后半段接上去。 */
+  signature: string;
 }
 
 const DEFAULT_MAX_ATTEMPTS = 3;
@@ -135,8 +137,15 @@ export class OutboundChannel {
 
     const parts = this.#plan(input);
     if (parts.length === 0) return this.#succeed(input.deliveryId, []);
+    if (parts.length > MAX_SEGMENTS) {
+      return this.#fail(input.deliveryId, 'too-long', `内容需要 ${parts.length} 条消息，超过 ${MAX_SEGMENTS} 条上限`);
+    }
 
-    const progress = this.#progress.get(input.deliveryId) ?? { parts: 0, messageIds: [] };
+    const signature = signatureOf(parts);
+    const progress = this.#progress.get(input.deliveryId) ?? { parts: 0, messageIds: [], signature };
+    if (progress.parts > 0 && progress.signature !== signature) {
+      return this.#fail(input.deliveryId, 'other', '重投内容与首次发送的分段不一致，已停止续发');
+    }
     const chatId = input.chatId ?? this.#chatId;
     if (chatId === undefined || chatId === '') return this.#fail(input.deliveryId, 'other', '没有目标会话');
 
@@ -147,6 +156,7 @@ export class OutboundChannel {
         const messageId = await this.#sendWithRetry(part, index, index === 0 ? input.replyTo : undefined, input.deliveryId, chatId);
         progress.messageIds.push(messageId);
         progress.parts = index + 1;
+        progress.signature = signature;
         this.#rememberProgress(input.deliveryId, progress);
       } catch (error) {
         const failure = toLarkFailure(error);
@@ -446,6 +456,22 @@ export function fileTypeOf(fileName: string): 'opus' | 'mp4' | 'pdf' | 'doc' | '
   if (lower.endsWith('.mp4') || lower.endsWith('.mov')) return 'mp4';
   if (lower.endsWith('.opus') || lower.endsWith('.ogg') || lower.endsWith('.mp3')) return 'opus';
   return 'stream';
+}
+
+/** 分段指纹：只用来判断「同一次交付的重投是不是同一份内容」。 */
+function signatureOf(parts: readonly Part[]): string {
+  const hash = createHash('sha1');
+  for (const part of parts) {
+    hash.update(part.kind);
+    hash.update('\u0000');
+    hash.update(part.label);
+    hash.update('\u0000');
+    hash.update(String(part.payload.length));
+    hash.update('\u0000');
+    if (typeof part.payload === 'string') hash.update(part.payload);
+    hash.update('\u0000');
+  }
+  return hash.digest('hex');
 }
 
 /** 有界 Map：超出上限先删最早插入的键（Map 保序）。 */

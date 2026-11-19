@@ -18,8 +18,7 @@ export interface LarkCredentials {
 
 /** 连接凭据里可以安全展示的部分：secret 永远不出这个边界。 */
 export interface LarkCredentialSummary {
-  appId: string;
-  /** App ID 尾号，面板只显示它。 */
+  /** App ID 尾号：完整 App ID 不进入面板返回值。 */
   appIdTail: string;
   domain: LarkDomain;
 }

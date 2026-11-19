@@ -39,6 +39,10 @@ export interface RuntimeDeps {
   onChange?: (change: RuntimeChange) => void;
   /** 设置变化（启动、面板保存）：入口据此决定接核心还是走独立模式。 */
   onSettings?: (settings: LocalSettings) => void;
+  /** 初次启动失败后的重试基数（毫秒），默认 5000；测试可调小。 */
+  retryBaseMs?: number;
+  /** 假活看门狗周期（毫秒），默认 60000；0 表示关闭，测试可调小。 */
+  watchdogMs?: number;
 }
 
 /** 面板读的状态快照：只放能安全展示的字段。 */
@@ -65,6 +69,11 @@ export class LarkRuntime {
   #stopped = true;
   #lastError: string | undefined;
   #coreAvailable = false;
+  /** 初次连接失败后的自愈定时器（指数退避，最长 60 秒）。 */
+  #retryTimer: ReturnType<typeof setTimeout> | undefined;
+  #retryAttempt = 0;
+  /** 假活检测：状态连着但长期没有帧时主动重建。 */
+  #watchdogTimer: ReturnType<typeof setInterval> | undefined;
 
   constructor(deps: RuntimeDeps) {
     this.#deps = deps;
@@ -81,12 +90,14 @@ export class LarkRuntime {
     if (this.#shouldConnect()) {
       await this.#connect();
     }
+    this.#startWatchdog();
   }
 
   /** 停用 / 卸载：断开连接，不再接受事件。 */
   stop(): void {
     this.#stopped = true;
     this.#disconnect();
+    this.#stopWatchdog();
     this.#deps.onChange?.({ app: null });
   }
 
@@ -180,16 +191,75 @@ export class LarkRuntime {
     try {
       await connection.start(handlers);
       this.#lastError = undefined;
+      this.#retryAttempt = 0;
+      this.#cancelRetry();
     } catch (error) {
       this.#lastError = (error as Error).message;
       this.#deps.logger.warn?.('长连接启动失败', this.#lastError);
+      this.#scheduleRetry();
     }
   }
 
+  #retryDelay(): number {
+    const base = this.#deps.retryBaseMs ?? 5_000;
+    return Math.min(60_000, base * 2 ** Math.min(this.#retryAttempt, 4));
+  }
+
+  #scheduleRetry(): void {
+    this.#cancelRetry();
+    if (this.#stopped || !this.#shouldConnect()) return;
+    const delay = this.#retryDelay();
+    this.#retryAttempt += 1;
+    this.#deps.logger.debug?.(`长连接将在 ${delay}ms 后重试`);
+    const timer = setTimeout(() => {
+      this.#retryTimer = undefined;
+      void this.#retryConnect();
+    }, delay);
+    if (typeof timer === 'object' && 'unref' in timer) timer.unref();
+    this.#retryTimer = timer;
+  }
+
+  #cancelRetry(): void {
+    if (this.#retryTimer !== undefined) {
+      clearTimeout(this.#retryTimer);
+      this.#retryTimer = undefined;
+    }
+  }
+
+  async #retryConnect(): Promise<void> {
+    if (this.#stopped || !this.#shouldConnect()) return;
+    this.#disconnect();
+    await this.#connect();
+  }
+
   #disconnect(): void {
+    this.#cancelRetry();
     const connection = this.#connection;
     this.#connection = null;
     connection?.stop();
+  }
+
+  #startWatchdog(): void {
+    const interval = this.#deps.watchdogMs ?? 60_000;
+    if (interval <= 0) return;
+    this.#stopWatchdog();
+    const timer = setInterval(() => {
+      const connection = this.#connection;
+      if (connection?.looksStalled?.() !== true) return;
+      this.#deps.logger.warn?.('长连接长时间没有入站帧，主动重建');
+      void connection.restart?.().catch((error: unknown) => {
+        this.#deps.logger.warn?.('重建长连接失败', error instanceof Error ? error.message : String(error));
+      });
+    }, interval);
+    if (typeof timer === 'object' && 'unref' in timer) timer.unref();
+    this.#watchdogTimer = timer;
+  }
+
+  #stopWatchdog(): void {
+    if (this.#watchdogTimer !== undefined) {
+      clearInterval(this.#watchdogTimer);
+      this.#watchdogTimer = undefined;
+    }
   }
 }
 

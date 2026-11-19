@@ -69,6 +69,20 @@ test('主人：记住最近活跃会话，重启后仍认得主人', async () =>
   });
 });
 
+test('主人：核心绑定结果可以镜像进来，不改别的 open_id', async () => {
+  await withTempDir(async (dir) => {
+    const owners = new OwnerStore({ dataDir: dir.path });
+    await owners.remember('ou_a', 'oc_1');
+    assert.deepEqual(await owners.get(), { openId: 'ou_a', chatId: 'oc_1' });
+
+    await owners.remember('ou_a', 'oc_2');
+    assert.deepEqual(await owners.get(), { openId: 'ou_a', chatId: 'oc_2' });
+
+    await owners.remember('ou_b', 'oc_3');
+    assert.deepEqual(await owners.get(), { openId: 'ou_a', chatId: 'oc_2' });
+  });
+});
+
 test('主人：清除后可以重新认领（换机器/重装场景）', async () => {
   await withTempDir(async (dir) => {
     const owners = new OwnerStore({ dataDir: dir.path });

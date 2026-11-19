@@ -16,6 +16,7 @@ import type { LarkLogger } from './lark/connection.ts';
 import { createSdkClient } from './lark/sdk.ts';
 import type { LarkCredentials } from './lark/types.ts';
 import { OutboundChannel } from './outbound.ts';
+import type { BridgeHealth } from './protocol.ts';
 import type { LarkEventSink } from './runtime.ts';
 import { StandaloneChat } from './standalone.ts';
 import type { StandaloneController } from './standalone.ts';
@@ -30,6 +31,8 @@ export interface LarkStackOptions {
   botOpenId?: () => string | undefined;
   ownerOpenId?: () => string | undefined;
   features?: () => readonly string[];
+  isOwner?: (sender: string) => boolean | undefined;
+  onOwner?: (sender: string, chatId: string, chatType: 'p2p' | 'group') => void;
   /** 当前设置（独立模式要读排队方式与状态行开关）。 */
   settings: () => LocalSettings;
   bindings: DirectBindingStore;
@@ -37,6 +40,10 @@ export interface LarkStackOptions {
   /** 宿主的会话控制器；没注入时为 null（独立模式不可用）。 */
   controller: () => StandaloneController | null;
   ownerLabel?: () => string;
+  /** 长连接健康度：断线时让核心别继续排队。 */
+  health?: () => BridgeHealth;
+  /** 从本机镜像的 owner 找会话（重启后核心先回交付的场景）。 */
+  chatFor?: (sender: string) => string | undefined;
   /** 测试注入；默认用官方 SDK 建客户端。 */
   createApi?: (app: LarkCredentials) => LarkApi;
   now?: () => number;
@@ -67,6 +74,8 @@ export function createLarkStack(options: LarkStackOptions): LarkStack {
     logger,
     maxText: options.config.maxText,
     ...(options.now === undefined ? {} : { now: options.now }),
+    ...(options.health === undefined ? {} : { health: options.health }),
+    ...(options.chatFor === undefined ? {} : { chatFor: options.chatFor }),
   });
 
   const standaloneOutbound = new OutboundChannel({
@@ -95,6 +104,8 @@ export function createLarkStack(options: LarkStackOptions): LarkStack {
     ...(options.botOpenId === undefined ? {} : { botOpenId: options.botOpenId }),
     ...(options.ownerOpenId === undefined ? {} : { ownerOpenId: options.ownerOpenId }),
     ...(options.features === undefined ? {} : { features: options.features }),
+    ...(options.isOwner === undefined ? {} : { isOwner: options.isOwner }),
+    ...(options.onOwner === undefined ? {} : { onOwner: options.onOwner }),
     ...(options.now === undefined ? {} : { now: options.now }),
     fallback: (message, draft) => standalone.handleInbound(message, draft),
   });

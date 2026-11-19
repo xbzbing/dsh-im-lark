@@ -12,7 +12,7 @@
 
 import { join, resolve } from 'node:path';
 
-import { DEFAULT_LONG_TASK_MINUTES, DEFAULT_MAX_TEXT_CHARS, DEFAULT_QUESTION_DELAY_MINUTES } from '../shared/limits.ts';
+import { DEFAULT_MAX_TEXT_CHARS } from '../shared/limits.ts';
 import { readJsonIfPresent, writePrivateFile } from './state/files.ts';
 import type { StateLogger } from './state/files.ts';
 import { resolveDataDir } from './state/paths.ts';
@@ -36,12 +36,6 @@ export interface PluginConfig {
   maxText?: number;
   /** 是否在用户消息上加「正在处理」表情，默认开。 */
   typingIndicator?: boolean;
-  /** 长任务提醒阈值（分钟）：回合超过它才提醒，默认 30；面板可覆盖。 */
-  longTaskThresholdMinutes?: number;
-  /** 问题与审批提醒：默认开。关掉后一律交回 Web 端。 */
-  questionReminders?: boolean;
-  /** 提醒前的等待时间（分钟），默认 5；0 表示立刻提醒。 */
-  questionDelayMinutes?: number;
   /** 独立模式建会话的工作区 id；空表示自动创建的默认工作区。 */
   directWorkspaceId?: string;
   /** 独立模式里回合正在跑时又来一条消息的提交方式。 */
@@ -60,9 +54,6 @@ export interface NormalizedConfig {
   domain: LarkDomain;
   maxText: number;
   typingIndicator: boolean;
-  longTaskThresholdMinutes: number;
-  questionReminders: boolean;
-  questionDelayMinutes: number;
   directWorkspaceId: string | undefined;
   directBusyMode: BusyMode;
   replyStatus: boolean;
@@ -71,9 +62,6 @@ export interface NormalizedConfig {
 
 const MIN_MAX_TEXT = 200;
 const MAX_MAX_TEXT = 20_000;
-const MIN_LONG_TASK_MINUTES = 1;
-const MAX_LONG_TASK_MINUTES = 24 * 60;
-const MAX_QUESTION_DELAY_MINUTES = 120;
 
 function asString(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
@@ -111,12 +99,6 @@ export function normalizePluginConfig(raw: unknown): NormalizedConfig {
     domain: asDomain(input.domain) ?? 'feishu',
     maxText: asIntegerInRange(input.maxText, MIN_MAX_TEXT, MAX_MAX_TEXT) ?? DEFAULT_MAX_TEXT_CHARS,
     typingIndicator: asBoolean(input.typingIndicator) ?? true,
-    longTaskThresholdMinutes:
-      asIntegerInRange(input.longTaskThresholdMinutes, MIN_LONG_TASK_MINUTES, MAX_LONG_TASK_MINUTES) ??
-      DEFAULT_LONG_TASK_MINUTES,
-    questionReminders: asBoolean(input.questionReminders) ?? true,
-    questionDelayMinutes:
-      asIntegerInRange(input.questionDelayMinutes, 0, MAX_QUESTION_DELAY_MINUTES) ?? DEFAULT_QUESTION_DELAY_MINUTES,
     directWorkspaceId: asString(input.directWorkspaceId),
     directBusyMode: asBusyMode(input.directBusyMode) ?? DEFAULT_DIRECT_BUSY_MODE,
     replyStatus: asBoolean(input.replyStatus) ?? false,
@@ -135,12 +117,6 @@ export interface LocalSettings {
   enabled: boolean;
   /** 是否接入「我的超级助理」。 */
   superagent: boolean;
-  /** 长任务提醒阈值（分钟）。 */
-  longTaskThresholdMinutes: number;
-  /** 是否发送问题与审批提醒。 */
-  questionReminders: boolean;
-  /** 提醒前等待（分钟）。 */
-  questionDelayMinutes: number;
   /** 独立模式的工作区 id（空串表示默认工作区）。 */
   directWorkspaceId: string;
   /** 独立模式回合内的提交方式。 */
@@ -155,9 +131,6 @@ export function defaultSettings(config: NormalizedConfig): LocalSettings {
   return {
     enabled: config.enabled,
     superagent: config.superagent,
-    longTaskThresholdMinutes: config.longTaskThresholdMinutes,
-    questionReminders: config.questionReminders,
-    questionDelayMinutes: config.questionDelayMinutes,
     directWorkspaceId: config.directWorkspaceId ?? '',
     directBusyMode: config.directBusyMode,
     replyStatus: config.replyStatus,
@@ -174,12 +147,6 @@ export function normalizeSettings(raw: unknown, config: NormalizedConfig): Local
   return {
     enabled: asBoolean(input.enabled) ?? fallback.enabled,
     superagent: asBoolean(input.superagent) ?? fallback.superagent,
-    longTaskThresholdMinutes:
-      asIntegerInRange(input.longTaskThresholdMinutes, MIN_LONG_TASK_MINUTES, MAX_LONG_TASK_MINUTES) ??
-      fallback.longTaskThresholdMinutes,
-    questionReminders: asBoolean(input.questionReminders) ?? fallback.questionReminders,
-    questionDelayMinutes:
-      asIntegerInRange(input.questionDelayMinutes, 0, MAX_QUESTION_DELAY_MINUTES) ?? fallback.questionDelayMinutes,
     directWorkspaceId: asString(input.directWorkspaceId) ?? fallback.directWorkspaceId,
     directBusyMode: asBusyMode(input.directBusyMode) ?? fallback.directBusyMode,
     replyStatus: asBoolean(input.replyStatus) ?? fallback.replyStatus,

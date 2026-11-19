@@ -34,6 +34,8 @@ export interface PanelDeps {
   settings: LocalConfigStore;
   config: NormalizedConfig;
   logger: PluginLogger;
+  /** 自检成功时把机器人身份交回入口（@ 提及需要它）。 */
+  onProbe?: (check: LarkCredentialCheck) => void;
   /** 测试注入；默认用真实网络。 */
   probe?: typeof probeCredentials;
 }
@@ -65,9 +67,6 @@ export interface PanelSnapshot {
     enabled: boolean;
     superagent: boolean;
     typingIndicator: boolean;
-    questionReminders: boolean;
-    questionDelayMinutes: number;
-    longTaskThresholdMinutes: number;
     replyStatus: boolean;
   };
   config: {
@@ -90,9 +89,6 @@ export function snapshotOf(deps: PanelDeps): PanelSnapshot {
       enabled: settings.enabled,
       superagent: settings.superagent,
       typingIndicator: settings.typingIndicator,
-      questionReminders: settings.questionReminders,
-      questionDelayMinutes: settings.questionDelayMinutes,
-      longTaskThresholdMinutes: settings.longTaskThresholdMinutes,
       replyStatus: settings.replyStatus,
     },
     config: {
@@ -115,6 +111,8 @@ export async function handleEndpoint(deps: PanelDeps, endpoint: string, payload:
       const filled = textOf(input.appSecret);
       const domain = domainOf(input.domain) ?? deps.config.domain;
       if (appId === undefined) throw codedError('App ID 不能为空', 'invalid-config');
+      // App ID 会作为桥的 account 被核心校验：形状不对要在这里拒绝，不能拖到注册时。
+      if (!/^[\w.@-]{1,128}$/u.test(appId)) throw codedError('App ID 格式不正确', 'invalid-config');
 
       // 留空表示「沿用已保存的 Secret」：面板不回显密钥，改 App ID 时不必重输。
       const appSecret = filled ?? (await deps.credentials.load())?.appSecret;
@@ -143,6 +141,7 @@ export async function handleEndpoint(deps: PanelDeps, endpoint: string, payload:
       }
       const probe = deps.probe ?? probeCredentials;
       const result: LarkCredentialCheck = await probe({ app: { appId, appSecret, domain } });
+      deps.onProbe?.(result);
       return { check: result };
     }
 
@@ -150,17 +149,11 @@ export async function handleEndpoint(deps: PanelDeps, endpoint: string, payload:
       const input = payloadOf(payload);
       const patch: Record<string, unknown> = {};
 
-      for (const key of ['enabled', 'superagent', 'typingIndicator', 'questionReminders', 'replyStatus'] as const) {
+      for (const key of ['enabled', 'superagent', 'typingIndicator', 'replyStatus'] as const) {
         if (input[key] !== undefined) {
           if (typeof input[key] !== 'boolean') throw codedError(`${key} 必须是布尔值`, 'invalid-config');
           patch[key] = input[key];
         }
-      }
-      if (input.questionDelayMinutes !== undefined) {
-        patch.questionDelayMinutes = integerOf(input.questionDelayMinutes, 0, 120, 'questionDelayMinutes');
-      }
-      if (input.longTaskThresholdMinutes !== undefined) {
-        patch.longTaskThresholdMinutes = integerOf(input.longTaskThresholdMinutes, 1, 24 * 60, 'longTaskThresholdMinutes');
       }
       if (Object.keys(patch).length === 0) throw codedError('没有要保存的设置', 'invalid-config');
 
@@ -231,11 +224,4 @@ function textOf(value: unknown): string | undefined {
 
 function domainOf(value: unknown): LarkDomain | undefined {
   return value === 'lark' || value === 'feishu' ? value : undefined;
-}
-
-function integerOf(value: unknown, min: number, max: number, field: string): number {
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) {
-    throw codedError(`${field} 必须是 ${min}–${max} 的整数`, 'invalid-config');
-  }
-  return value;
 }

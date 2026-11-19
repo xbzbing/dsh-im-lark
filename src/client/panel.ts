@@ -10,9 +10,9 @@
 
 import iconUrl from '../../assets/icon.svg';
 import { ENDPOINTS, REFRESH_INTERVAL_MS } from './constants.ts';
-import { dotOf, errorText, isContractMismatch, validateMinutes } from './logic.ts';
+import { dotOf, errorText, isContractMismatch } from './logic.ts';
 import type { Translate } from './locales.ts';
-import { h, useCallback, useEffect, useRef, useState } from './platform.ts';
+import { h, useCallback, useEffect, useState } from './platform.ts';
 import { ensureStyles } from './styles.ts';
 import { Button, IconRefresh, Input, Switch } from './ui.ts';
 
@@ -32,9 +32,6 @@ interface Snapshot {
     enabled: boolean;
     superagent: boolean;
     typingIndicator: boolean;
-    questionReminders: boolean;
-    questionDelayMinutes: number;
-    longTaskThresholdMinutes: number;
     replyStatus: boolean;
   };
   config: { domain: string; maxText: number };
@@ -55,16 +52,10 @@ export function LarkSettingsPanel(props: any) {
   const [appId, setAppId] = useState('');
   const [appSecret, setAppSecret] = useState('');
   const [domain, setDomain] = useState('feishu');
-  const [minutes, setMinutes] = useState('');
-  const [delay, setDelay] = useState('');
-  const minutesDirty = useRef(false);
-  const delayDirty = useRef(false);
 
   const applySnapshot = useCallback((next: Snapshot) => {
     setSnapshot(next);
     setDomain((current) => (current === '' ? next.status.domain : current));
-    if (!minutesDirty.current) setMinutes(String(next.settings.longTaskThresholdMinutes));
-    if (!delayDirty.current) setDelay(String(next.settings.questionDelayMinutes));
   }, []);
 
   const refresh = useCallback(async (quiet = false) => {
@@ -105,7 +96,7 @@ export function LarkSettingsPanel(props: any) {
   const saveSettings = (patch: Record<string, unknown>) =>
     run('settings', async () => rpcCall<Snapshot>(ENDPOINTS.setSettings, patch));
 
-  const toggle = (key: 'enabled' | 'superagent' | 'typingIndicator' | 'questionReminders' | 'replyStatus', value: boolean) => {
+  const toggle = (key: 'enabled' | 'superagent' | 'typingIndicator' | 'replyStatus', value: boolean) => {
     void saveSettings({ [key]: value });
   };
 
@@ -154,29 +145,6 @@ export function LarkSettingsPanel(props: any) {
   const clearCredentials = () => {
     if (typeof window !== 'undefined' && !window.confirm(`${t('credentials.clear')}?`)) return;
     void run('clear', async () => rpcCall<Snapshot>(ENDPOINTS.clearCredentials), t('credentials.cleared'));
-  };
-
-  const saveNumbers = () => {
-    if (minutes.trim() === '' || delay.trim() === '') {
-      setError(t('behavior.save'));
-      return;
-    }
-    const minutesError = validateMinutes(minutes, 1, 24 * 60);
-    if (minutesError !== null) {
-      setError(minutesError);
-      return;
-    }
-    const delayError = validateMinutes(delay, 0, 120);
-    if (delayError !== null) {
-      setError(delayError);
-      return;
-    }
-    minutesDirty.current = false;
-    delayDirty.current = false;
-    void saveSettings({
-      longTaskThresholdMinutes: Number(minutes),
-      questionDelayMinutes: Number(delay),
-    });
   };
 
   if (loading) {
@@ -324,48 +292,6 @@ export function LarkSettingsPanel(props: any) {
         h(Switch, { checked: settings?.replyStatus === true, onChange: (value: boolean) => toggle('replyStatus', value), label: t('behavior.replyStatus') }),
         t('behavior.replyStatus'),
         t('behavior.replyStatusHint'),
-      ),
-      toggleRow(
-        h(Switch, { checked: settings?.questionReminders === true, onChange: (value: boolean) => toggle('questionReminders', value), label: t('behavior.reminders') }),
-        t('behavior.reminders'),
-        t('behavior.remindersHint'),
-      ),
-      h(
-        'div',
-        { className: 'lark-grid-2' },
-        field(
-          t('behavior.longTask'),
-          h(Input, {
-            className: 'lark-input',
-            type: 'number',
-            min: 1,
-            max: 24 * 60,
-            value: minutes,
-            onChange: (event: any) => {
-              minutesDirty.current = true;
-              setMinutes(event.target.value);
-            },
-          }),
-        ),
-        field(
-          t('behavior.delay'),
-          h(Input, {
-            className: 'lark-input',
-            type: 'number',
-            min: 0,
-            max: 120,
-            value: delay,
-            onChange: (event: any) => {
-              delayDirty.current = true;
-              setDelay(event.target.value);
-            },
-          }),
-        ),
-      ),
-      h(
-        'div',
-        { className: 'lark-actions' },
-        h(Button, { disabled: busy !== '', onClick: saveNumbers }, busy === 'settings' ? t('behavior.saving') : t('behavior.save')),
       ),
     ),
   );

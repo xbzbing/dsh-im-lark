@@ -22,7 +22,7 @@ export const TEXT_BODY_BYTES_MAX = 140 * 1024;
 export const DEFAULT_MAX_TEXT_CHARS = 2_000;
 
 /** 单次交付最多分多少条：超长正文按段切，但不做无上限放大。 */
-export const MAX_SEGMENTS = 30;
+export const MAX_SEGMENTS = 20;
 
 /** 入站文件：单条最多几个（与核心协议一致）。 */
 export const OWNER_FILES_MAX = 3;
@@ -62,9 +62,3 @@ export const SEND_QPS = 5;
 
 /** 发送令牌桶的窗口。 */
 export const SEND_WINDOW_MS = 1_000;
-
-/** 长任务提醒的默认阈值（分钟）。 */
-export const DEFAULT_LONG_TASK_MINUTES = 30;
-
-/** 问题提醒的默认等待时间（分钟）：这段时间里在 Web 端答完就不打扰。 */
-export const DEFAULT_QUESTION_DELAY_MINUTES = 5;

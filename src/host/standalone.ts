@@ -261,7 +261,10 @@ export class StandaloneChat {
     const existing = await this.#owners.get();
     if (existing !== null) {
       if (message.senderOpenId !== existing.openId) return false;
-      if (message.chatId !== existing.chatId) await this.#owners.rememberChat(message.chatId);
+      // 只把单聊记成「主人最近活跃的会话」：在群里说话不该让主动发送改投到群里。
+      if (message.chatType === 'p2p' && message.chatId !== existing.chatId) {
+        await this.#owners.rememberChat(message.chatId);
+      }
       return true;
     }
     if (message.chatType !== 'p2p') return false;

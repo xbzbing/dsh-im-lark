@@ -112,6 +112,21 @@ export class OwnerStore {
     return owner;
   }
 
+  /**
+   * 核心模式下镜像核心的绑定结果：核心说「这是主人」时才调用。
+   * 独立模式自己认主人，两边不会同时写。
+   */
+  async remember(openId: string, chatId: string): Promise<void> {
+    const current = await this.get();
+    if (current === null) {
+      const owner: OwnerIdentity = { openId, chatId };
+      this.#owner = owner;
+      await writePrivateFile(this.#path, `${JSON.stringify(owner, null, 2)}\n`);
+      return;
+    }
+    if (current.openId === openId && current.chatId !== chatId) await this.rememberChat(chatId);
+  }
+
   /** 记录主人最近活跃的单聊，主动发送用。 */
   async rememberChat(chatId: string): Promise<void> {
     const current = await this.get();
