@@ -91,5 +91,8 @@
     "esbuild": "0.28.2",
     "typescript": "5.9.3",
     "dsh-my-superagent": "file:../dsh-my-superagent"
+  },
+  "bin": {
+    "dsh-lark-send": "./bin/dsh-lark-send.mjs"
   }
 }

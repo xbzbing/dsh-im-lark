@@ -37,6 +37,8 @@ export interface RuntimeDeps {
   sink?: LarkEventSink;
   /** 凭据变化（启动、面板保存、清除）：入口据此重建整套对象。 */
   onChange?: (change: RuntimeChange) => void;
+  /** 设置变化（启动、面板保存）：入口据此决定接核心还是走独立模式。 */
+  onSettings?: (settings: LocalSettings) => void;
 }
 
 /** 面板读的状态快照：只放能安全展示的字段。 */
@@ -73,6 +75,7 @@ export class LarkRuntime {
   async start(): Promise<void> {
     this.#stopped = false;
     this.#settings = await this.#deps.settings.load();
+    this.#deps.onSettings?.(this.#settings);
     this.#credentials = await this.#deps.credentials.load();
     this.#deps.onChange?.({ app: this.#credentials });
     if (this.#shouldConnect()) {
@@ -110,6 +113,7 @@ export class LarkRuntime {
   async applySettings(patch: Partial<LocalSettings>): Promise<LocalSettings> {
     const saved = await this.#deps.settings.save(patch);
     this.#settings = saved;
+    this.#deps.onSettings?.(saved);
     await this.#reconcile();
     return saved;
   }

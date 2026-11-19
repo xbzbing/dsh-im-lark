@@ -17,6 +17,7 @@ import type { PluginConfig } from './config.ts';
 import { injectOptional, resolveLogger } from './host-context.ts';
 import type { PluginContext } from './host-context.ts';
 import { LarkConnection } from './lark/connection.ts';
+import { registerLarkCommand } from './command.ts';
 import { registerPanelRpc } from './panel-host.ts';
 import { sdkFactories } from './lark/sdk.ts';
 import type { LarkCredentials } from './lark/types.ts';
@@ -26,6 +27,8 @@ import type { RuntimeStatus } from './runtime.ts';
 import { createLarkStack } from './stack.ts';
 import type { LarkStack } from './stack.ts';
 import { CredentialStore } from './state/credentials.ts';
+import { DirectBindingStore, OwnerStore } from './state/direct.ts';
+import type { StandaloneController } from './standalone.ts';
 import { ensurePrivateDir } from './state/files.ts';
 
 export type { PluginConfig, PluginContext };
@@ -53,11 +56,16 @@ export async function apply(ctx: PluginContext, config: PluginConfig | unknown =
 
   const credentials = new CredentialStore({ dataDir: normalized.dataDir, logger });
   const settings = new LocalConfigStore({ dataDir: normalized.dataDir, config: normalized, logger });
+  const bindings = new DirectBindingStore({ dataDir: normalized.dataDir, logger });
+  const owners = new OwnerStore({ dataDir: normalized.dataDir, logger });
 
   /** 当前连接的整套对象；凭据变化时整套重建。 */
   let stack: LarkStack | null = null;
   let service: MySuperagentService | undefined;
   let coreHandle: BridgeHandle | undefined;
+  let controller: StandaloneController | null = null;
+  /** 当前消息是否交给核心（面板开关开 + 服务在）。 */
+  let coreActive = false;
 
   const registerCore = (): void => {
     if (service === undefined || stack === null || coreHandle !== undefined) return;
@@ -72,6 +80,18 @@ export async function apply(ctx: PluginContext, config: PluginConfig | unknown =
     // detach 会 dispose 核心给的句柄，注册表随之摘掉 provider。
     stack?.bridge.detach();
     logger.info?.('已断开「我的超级助理」');
+  };
+
+  /**
+   * 两种模式互斥：开关开着且服务在才把消息交给核心，否则走独立模式。
+   * 只在新旧判定不同的时候动注册，避免每次保存设置都重注册一遍。
+   */
+  const applyRouting = (): void => {
+    const should = service !== undefined && settings.current.superagent;
+    if (should === coreActive) return;
+    coreActive = should;
+    if (should) registerCore();
+    else unregisterCore();
   };
 
   const teardown = (): void => {
@@ -94,12 +114,18 @@ export async function apply(ctx: PluginContext, config: PluginConfig | unknown =
       config: normalized,
       logger,
       typing: settings.current.typingIndicator,
-      features: () => service?.protocol.features ?? [],
+      // 独立模式也要下载媒体：核心的 features 只在核心模式下有意义。
+      features: () => (coreActive ? service?.protocol.features ?? [] : ['owner-images', 'owner-files']),
       botOpenId: () => undefined,
-      ownerOpenId: () => undefined,
+      ownerOpenId: () => owners.peek()?.openId,
+      settings: () => settings.current,
+      bindings,
+      owners,
+      controller: () => controller,
+      ownerLabel: () => tailOf(app.appId),
     });
     runtime.setSink(stack.sink);
-    registerCore();
+    applyRouting();
   };
 
   const runtime = new LarkRuntime({
@@ -115,6 +141,7 @@ export async function apply(ctx: PluginContext, config: PluginConfig | unknown =
         createDispatcher: sdkFactories.createDispatcher,
       }),
     onChange: ({ app }) => sync(app),
+    onSettings: () => applyRouting(),
   });
 
   // 先 start：onChange 里会建出第一份 stack 并接上事件去向。
@@ -135,21 +162,65 @@ export async function apply(ctx: PluginContext, config: PluginConfig | unknown =
 
     service = injected;
     runtime.setCoreAvailable(true);
-    registerCore();
+    applyRouting();
 
     scope.effect?.(
       () => () => {
         if (service === injected) service = undefined;
         runtime.setCoreAvailable(false);
+        coreActive = false;
         unregisterCore();
       },
       'dsh-im-lark: 核心撤销',
     );
   });
 
+  // 独立模式的会话控制器：宿主没有它时独立模式整体不可用（面板上看不到开关）。
+  injectOptional(ctx, 'sessionController', (scope) => {
+    controller = (scope.sessionController as StandaloneController | undefined) ?? null;
+    scope.effect?.(() => () => {
+      controller = null;
+    }, 'dsh-im-lark: 解挂会话控制器');
+  });
+
+  // 所有会话的事件都要收到：独立模式只处理自己绑定的那个，其余忽略。
+  if (typeof ctx.on === 'function') {
+    ctx.on(
+      'session/event',
+      ((session: unknown, event: unknown) => {
+        const id = typeof session === 'string' ? session : ((session as { id?: unknown } | null)?.id ?? '');
+        if (typeof id === 'string' && id !== '') stack?.standalone.handleEvent(id, event);
+      }) as unknown as (...args: unknown[]) => void,
+      { global: true },
+    );
+  }
+
   registerPanelRpc(ctx, { runtime, credentials, settings, config: normalized, logger });
 
+  registerLarkCommand(ctx, {
+    logger,
+    sendText: async (text) => {
+      if (stack === null) return { ok: false, error: '先在插件面板里配置飞书应用凭据。' };
+      return stack.standalone.sendText(text);
+    },
+    statusText: () => {
+      const status = runtime.status();
+      const app = status.appIdTail === null ? '未配置' : `…${status.appIdTail}`;
+      const owner = owners.peek();
+      return [
+        `应用：${app}（${status.domain === 'lark' ? 'Lark' : '飞书'}）`,
+        `连接：${status.connection.state}`,
+        `收件人：${owner === null ? '还没有主人（先在飞书里私聊机器人）' : '已绑定'}`,
+      ].join('\n');
+    },
+  });
+
   logger.info?.(`飞书桥已加载（连接状态：${runtime.status().connection.state}）`);
+}
+
+/** App ID 尾号：建会话标题用，避免把完整 id 写进会话名。 */
+function tailOf(appId: string): string {
+  return appId.length > 6 ? appId.slice(-6) : appId;
 }
 
 function sameApp(a: LarkCredentials, b: LarkCredentials): boolean {

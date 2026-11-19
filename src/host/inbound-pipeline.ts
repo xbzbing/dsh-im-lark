@@ -36,8 +36,8 @@ export interface InboundPipelineOptions {
   /** 核心声明的可选能力，决定要不要下载图片/文件。 */
   features?: () => readonly string[];
   now?: () => number;
-  /** 没有核心时的去处（独立模式）；M5 接入。 */
-  fallback?: (message: LarkInboundMessage, body: InboundBody) => Promise<void>;
+  /** 没有核心时的去处（独立模式）。 */
+  fallback?: (message: LarkInboundMessage, draft: OwnerMessageDraft) => Promise<void>;
 }
 
 export class InboundPipeline {
@@ -135,7 +135,7 @@ export class InboundPipeline {
       this.#bridge.recordInbound(message.messageId);
       const result: AcceptResult = await this.#bridge.receive(draft);
       if (!result.accepted && result.reason === 'unknown' && this.#fallback !== undefined) {
-        await this.#fallback(message, body);
+        await this.#fallback(message, draft);
       } else if (!result.accepted) {
         this.#logger.debug?.('消息未被核心接受', `${result.reason} ${result.detail ?? ''}`);
       }

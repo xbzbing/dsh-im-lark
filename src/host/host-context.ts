@@ -43,7 +43,7 @@ export interface PluginContext {
   logger?: LoggerLike;
   effect?(execute: () => () => void, label?: string): unknown;
   inject?(services: string[], install: (scope: PluginContext) => void): unknown;
-  on?(event: string, listener: (...args: unknown[]) => void): () => void;
+  on?(event: string, listener: (...args: unknown[]) => void, options?: { prepend?: boolean; global?: boolean }): () => void;
   connection?: ConnectionLike;
   [key: string]: unknown;
 }
