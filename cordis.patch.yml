@@ -1,0 +1,7 @@
+# 只插入本插件自己的行，不替换任何自带组件。
+#
+# Loader 条目名必须与包名一致：Web 客户端按条目名解析插件的浏览器半。
+- insert:
+    - id: dsh-im-lark
+      name: dsh-im-lark
+      config: {}

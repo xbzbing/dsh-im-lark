@@ -1,0 +1,17 @@
+{
+  "panel.title": "Feishu",
+  "panel.subtitle": "Connect Feishu to this Harness: once the self-built app credentials are set, messages and deliveries sync between Feishu and the core.",
+  "common.loading": "Loading…",
+  "common.save": "Save",
+  "common.cancel": "Cancel",
+  "common.copied": "Copied",
+  "common.saved": "Saved",
+  "common.refresh": "Refresh",
+  "status.connected": "Connected",
+  "status.disconnected": "Not connected",
+  "status.connecting": "Connecting…",
+  "status.disabled": "Disabled",
+  "health.ok": "Connection healthy",
+  "health.degraded": "Connection degraded",
+  "health.down": "Connection down"
+}

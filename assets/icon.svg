@@ -1,0 +1,13 @@
+<svg role="img" aria-label="DSH Feishu bridge: a blue speech bubble carrying the DSH mark" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3370ff"/>
+      <stop offset="1" stop-color="#00c4d4"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="6" width="56" height="48" rx="12" fill="url(#bg)"/>
+  <path d="M18 54 L18 62 L28 54 Z" fill="#00c4d4"/>
+  <circle cx="32" cy="30" r="13" fill="#ffffff"/>
+  <path d="M24 34 q4 -9 9 -9 q6 0 8 6 q-4 5 -9 5 q-5 0 -8 -2 z" fill="#3370ff"/>
+  <circle cx="37" cy="26" r="1.8" fill="#ffffff"/>
+</svg>
