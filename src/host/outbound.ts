@@ -96,6 +96,8 @@ interface Progress {
 }
 
 const DEFAULT_MAX_ATTEMPTS = 3;
+/** 幂等表最多留多少条：长跑进程不能让它无限涨。 */
+const RECEIPTS_MAX = 500;
 
 export class OutboundChannel {
   readonly #api: LarkApi;
@@ -145,13 +147,13 @@ export class OutboundChannel {
         const messageId = await this.#sendWithRetry(part, index, index === 0 ? input.replyTo : undefined, input.deliveryId, chatId);
         progress.messageIds.push(messageId);
         progress.parts = index + 1;
-        this.#progress.set(input.deliveryId, progress);
+        this.#rememberProgress(input.deliveryId, progress);
       } catch (error) {
         const failure = toLarkFailure(error);
         const code = errorCodeOf(failure.kind);
         this.#logger.warn?.('出站发送失败', `${failure.kind} ${failure.message}`);
         // 已发出的段落保留在断点里：下次同 id 重投从下一段续发，不重复。
-        this.#progress.set(input.deliveryId, progress);
+        this.#rememberProgress(input.deliveryId, progress);
         return {
           messageIds: [...progress.messageIds],
           messagesSent: progress.messageIds.length,
@@ -269,15 +271,19 @@ export class OutboundChannel {
 
   #succeed(deliveryId: string, messageIds: string[]): OutboundReceipt {
     const receipt: OutboundReceipt = { messageIds: [...messageIds], messagesSent: messageIds.length };
-    this.#receipts.set(deliveryId, receipt);
+    remember(this.#receipts, deliveryId, receipt, RECEIPTS_MAX);
     this.#progress.delete(deliveryId);
     return receipt;
   }
 
   #fail(deliveryId: string, code: OutboundErrorCode, error: string): OutboundReceipt {
     const receipt: OutboundReceipt = { messageIds: [], messagesSent: 0, errorCode: code, error };
-    this.#receipts.set(deliveryId, receipt);
+    remember(this.#receipts, deliveryId, receipt, RECEIPTS_MAX);
     return receipt;
+  }
+
+  #rememberProgress(deliveryId: string, progress: Progress): void {
+    remember(this.#progress, deliveryId, progress, RECEIPTS_MAX);
   }
 }
 
@@ -440,6 +446,16 @@ export function fileTypeOf(fileName: string): 'opus' | 'mp4' | 'pdf' | 'doc' | '
   if (lower.endsWith('.mp4') || lower.endsWith('.mov')) return 'mp4';
   if (lower.endsWith('.opus') || lower.endsWith('.ogg') || lower.endsWith('.mp3')) return 'opus';
   return 'stream';
+}
+
+/** 有界 Map：超出上限先删最早插入的键（Map 保序）。 */
+function remember<K, V>(map: Map<K, V>, key: K, value: V, max: number): void {
+  map.set(key, value);
+  while (map.size > max) {
+    const oldest = map.keys().next();
+    if (oldest.done) break;
+    map.delete(oldest.value);
+  }
 }
 
 function sleep(ms: number): Promise<void> {

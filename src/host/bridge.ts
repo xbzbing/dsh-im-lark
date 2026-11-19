@@ -78,6 +78,8 @@ export interface LarkBridge {
 }
 
 const MAX_KNOWN_INBOUND = 500;
+/** 已交付记录与流式修订的内存上限：长跑进程不能让它们无限涨。 */
+const MAX_DELIVERED = 500;
 
 export function createLarkBridge(deps: BridgeDeps): LarkBridge {
   const now = deps.now ?? Date.now;
@@ -133,7 +135,7 @@ export function createLarkBridge(deps: BridgeDeps): LarkBridge {
         const card = renderDeliveryCard(delivery, { interactive: false });
         try {
           await deps.api.patchCard({ messageId: current.messageId, card });
-          streams.set(stream.id, { revision: stream.revision, messageId: current.messageId });
+          remember(streams, stream.id, { revision: stream.revision, messageId: current.messageId }, MAX_DELIVERED);
           return { deliveryId, status: 'sent', bridgeMessageId: current.messageId, messagesSent: 0 };
         } catch (error) {
           logger.warn?.('流式更新失败，改为重新发送', errorText(error));
@@ -181,8 +183,8 @@ export function createLarkBridge(deps: BridgeDeps): LarkBridge {
 
     const messageId = receipt.messageIds[0];
     if (messageId !== undefined) {
-      delivered.set(deliveryId, { delivery, messageId });
-      if (stream !== undefined) streams.set(stream.id, { revision: stream.revision, messageId });
+      remember(delivered, deliveryId, { delivery, messageId }, MAX_DELIVERED);
+      if (stream !== undefined) remember(streams, stream.id, { revision: stream.revision, messageId }, MAX_DELIVERED);
     }
     if (delivery.interaction !== undefined && messageId !== undefined && useCard) {
       interactions.add({
@@ -256,7 +258,12 @@ export function createLarkBridge(deps: BridgeDeps): LarkBridge {
   function detach(): void {
     const handle = coreHandle;
     coreHandle = null;
-    handle?.dispose();
+    try {
+      handle?.dispose();
+    } catch (error) {
+      // 核心清理失败不该把插件的停机流程一起带崩。
+      logger.warn?.('释放核心句柄失败', errorText(error));
+    }
   }
 
   function recordInbound(platformMessageId: string): void {
@@ -278,6 +285,16 @@ export function createLarkBridge(deps: BridgeDeps): LarkBridge {
   }
 
   return { provider, interactions, attach, detach, receive, answer, recordInbound, applyCardAction, dispose };
+}
+
+/** 有界 Map：超出上限先删最早插入的键（Map 保序）。 */
+function remember<K, V>(map: Map<K, V>, key: K, value: V, max: number): void {
+  map.set(key, value);
+  while (map.size > max) {
+    const oldest = map.keys().next();
+    if (oldest.done) break;
+    map.delete(oldest.value);
+  }
 }
 
 function failure(deliveryId: string, errorCode: NonNullable<Receipt['errorCode']>, error: string): Receipt {
