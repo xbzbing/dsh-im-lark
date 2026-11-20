@@ -238,6 +238,38 @@ test('连接：SDK 实时状态优先于回调快照', async () => {
   assert.equal(status.reconnectAttempts, 4);
 });
 
+test('连接：SDK 日志接到插件 logger，并摊平 SDK 的数组参数', async () => {
+  const seen: Array<[string, unknown[]]> = [];
+  const logger = {
+    info: (...args: unknown[]) => seen.push(['info', args]),
+    warn: (...args: unknown[]) => seen.push(['warn', args]),
+    error: (...args: unknown[]) => seen.push(['error', args]),
+  };
+  let captured: Record<string, unknown> = {};
+
+  const connection = new LarkConnection({
+    app: APP,
+    logger,
+    createWsClient: (params) => {
+      captured = params;
+      return {
+        start: () => Promise.resolve(),
+        close: () => {},
+        // 直接报 connected：握手轮询一轮就收口，不必等 onReady。
+        getConnectionStatus: () => ({ state: 'connected' }),
+      };
+    },
+    createDispatcher: fakeDispatcherFactory({ handlers: {} }),
+  });
+  await connection.start({ onMessage: () => {}, onCardAction: () => {} });
+
+  const adapter = captured.logger as { info(...args: unknown[]): void } | undefined;
+  assert.ok(adapter, '必须显式传 logger，否则 SDK 会把日志打到 console');
+  // SDK 的 LoggerProxy 把参数收成数组再调用，插件日志要的是摊平后的几条。
+  adapter.info(['[ws]', 'reconnect']);
+  assert.deepEqual(seen, [['info', ['[ws]', 'reconnect']]]);
+});
+
 test('连接：握手超时按 failed 报出，不无限等', async () => {
   const clock = fakeClock();
   const sink = { handlers: {} as Record<string, (data: unknown) => unknown> };

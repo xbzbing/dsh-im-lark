@@ -20,6 +20,39 @@ export interface LarkLogger {
   debug?(...args: unknown[]): unknown;
 }
 
+/** SDK 认的 logger 形状：五个级别都要有。 */
+export interface SdkLoggerLike {
+  info(...args: unknown[]): void;
+  warn(...args: unknown[]): void;
+  error(...args: unknown[]): void;
+  debug(...args: unknown[]): void;
+  trace(...args: unknown[]): void;
+}
+
+/**
+ * 把 SDK 的 logger 接到插件日志上。
+ *
+ * SDK 的 `LoggerProxy` 会把参数先收成**数组**再调用（`logger.info(['[ws]', ...])`），
+ * 直接透传会把整个数组当成一条消息，所以这里摊平一层。不显式传 logger 时 SDK 用
+ * 自带的 console 实现（`[ws] reconnect` 这类会直接打到宿主 stdout），因此必须接过来。
+ */
+export function sdkLogger(target: LarkLogger | undefined): SdkLoggerLike {
+  const forward = (level: 'info' | 'warn' | 'error' | 'debug') => (...args: unknown[]) => {
+    const sink = target?.[level] as ((...values: unknown[]) => unknown) | undefined;
+    if (typeof sink !== 'function') return;
+    const values = args.length === 1 && Array.isArray(args[0]) ? (args[0] as unknown[]) : args;
+    sink.apply(target, values);
+  };
+  return {
+    info: forward('info'),
+    warn: forward('warn'),
+    error: forward('error'),
+    debug: forward('debug'),
+    // SDK 的级别是 info，trace 实际不会触发；真触发时按 debug 记。
+    trace: forward('debug'),
+  };
+}
+
 export type LarkConnectionState = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'failed';
 
 export interface LarkConnectionStatus {
@@ -151,6 +184,7 @@ export class LarkConnection implements LarkConnectionPort {
       appSecret: this.#options.app.appSecret,
       domain: this.#options.app.domain,
       loggerLevel: 'info',
+      logger: sdkLogger(this.#options.logger),
       handshakeTimeoutMs: this.#options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS,
       wsConfig: { pingTimeout: this.#options.pingTimeoutSec ?? DEFAULT_PING_TIMEOUT_SEC },
       source: 'dsh-im-lark',

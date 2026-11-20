@@ -64,7 +64,7 @@ export function createLarkStack(options: LarkStackOptions): LarkStack {
   const api =
     options.createApi?.(app) ??
     createSdkLarkApi({
-      client: createSdkClient(app) as unknown as SdkClientLike,
+      client: createSdkClient({ ...app, ...(logger === undefined ? {} : { logger }) }) as unknown as SdkClientLike,
       logger,
     });
 
