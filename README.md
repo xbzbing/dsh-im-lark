@@ -34,16 +34,19 @@
 ```bash
 npm install
 npm run build
+dsh plugin --profile web add file:/绝对路径/dsh-im-lark
 ```
 
-在 profile 的 `cordis.patch.yml` 里加上插件（`dsh plugin add` 或手动编辑都行）：
+`file:` 依赖是**注入副本**，装进 profile 的 `node_modules` 后与仓库解耦：改了代码要
+`npm run build`，再卸了重装才会同步到运行中的 Host。
 
-```yaml
-- id: dsh-im-lark
-  name: dsh-im-lark
+```bash
+dsh plugin --profile web remove dsh-im-lark
+dsh plugin --profile web add file:/绝对路径/dsh-im-lark
 ```
 
-重启 `dsh web`，打开 **设置 → 插件 → dsh-im-lark** 填写凭据。
+重装后不用重启 `dsh web`：Host 半由热重载接管，浏览器刷新页面即可。打开
+**设置 → 飞书机器人**（或 **插件 → dsh-im-lark**）填写凭据。
 
 ## 飞书侧准备
 
