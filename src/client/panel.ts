@@ -208,22 +208,20 @@ export function LarkSettingsPanel(props: any) {
         row(t('status.connection'), h(Pill, { tone: toneOf(state), dot: true }, t(stateKey(state)))),
         row(t('status.appId'), h('span', { className: 'lark-mono' }, status?.appIdTail === null ? t('status.notConfigured') : `…${status?.appIdTail ?? ''}`)),
         row(t('status.domain'), domainLabel),
-        row(
-          t('status.core'),
-          h(Pill, { tone: status?.coreAvailable === true ? 'ok' : undefined }, status?.coreAvailable === true ? t('status.coreOn') : t('status.coreOff')),
-        ),
       ),
       toggleRow(h(Switch, { checked: settings?.enabled === true, onChange: (value: boolean) => toggle('enabled', value), label: t('status.enabled') }), t('status.enabled'), t('status.enabledHint')),
-      toggleRow(
-        h(Switch, {
-          checked: settings?.superagent === true,
-          disabled: status?.coreAvailable !== true,
-          onChange: (value: boolean) => toggle('superagent', value),
-          label: t('status.superagent'),
-        }),
-        t('status.superagent'),
-        t('status.superagentHint'),
-      ),
+      // 核心不可用时没有可接入的对象，直接不显示这个开关，避免一个永远打不开的控件。
+      status?.coreAvailable === true
+        ? toggleRow(
+            h(Switch, {
+              checked: settings?.superagent === true,
+              onChange: (value: boolean) => toggle('superagent', value),
+              label: t('status.superagent'),
+            }),
+            t('status.superagent'),
+            t('status.superagentHint'),
+          )
+        : null,
     ),
 
     h(
