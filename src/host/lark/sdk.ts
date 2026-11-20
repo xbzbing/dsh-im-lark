@@ -40,6 +40,33 @@ export function createSdkClient(input: { appId: string; appSecret: string; domai
 
 export const sdkFactories = Object.freeze({ createWsClient, createDispatcher, createSdkClient });
 
+/**
+ * 一键创建应用（扫码授权）。
+ *
+ * 与 `Client` 不同，`registerApp` 的 `domain` 要的是**主机名**而不是带 scheme 的
+ * 地址；默认值是 `accounts.feishu.cn`，这里按平台显式给。
+ */
+export interface AppRegistrationRequest {
+  domain: LarkDomain;
+  signal: AbortSignal;
+  onUrl: (info: { url: string; expireIn: number }) => void;
+}
+
+export interface AppRegistrationResult {
+  appId: string;
+  appSecret: string;
+}
+
+export async function registerApp(input: AppRegistrationRequest): Promise<AppRegistrationResult> {
+  const result = await Lark.registerApp({
+    domain: input.domain === 'lark' ? 'accounts.larksuite.com' : 'accounts.feishu.cn',
+    source: 'dsh-im-lark',
+    signal: input.signal,
+    onQRCodeReady: (info) => input.onUrl({ url: info.url, expireIn: info.expireIn }),
+  });
+  return { appId: result.client_id, appSecret: result.client_secret };
+}
+
 /** 给入口用的便捷装配（后续里程碑接出站时使用）。 */
 export function createSdkBridge(input: {
   appId: string;

@@ -27,6 +27,9 @@ export const REFRESH_INTERVAL_MS = 15_000;
 
 export const RPC_TIMEOUT_MS = 20_000;
 
+/** 扫码授权：轮询间隔。 */
+export const REGISTER_POLL_MS = 2_000;
+
 export const ENDPOINTS = Object.freeze({
   status: 'status',
   saveCredentials: 'credentials.save',
@@ -34,4 +37,7 @@ export const ENDPOINTS = Object.freeze({
   probe: 'probe',
   setSettings: 'settings.set',
   reconnect: 'reconnect',
+  registerStart: 'register.start',
+  registerPoll: 'register.poll',
+  registerCancel: 'register.cancel',
 } as const);

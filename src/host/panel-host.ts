@@ -20,6 +20,7 @@ import type { LarkRuntime, RuntimeStatus } from './runtime.ts';
 import type { CredentialStore } from './state/credentials.ts';
 import { probeCredentials } from './state/credentials.ts';
 import type { LarkCredentials, LarkCredentialCheck, LarkDomain } from './lark/types.ts';
+import type { AppRegistration } from './registration.ts';
 
 export const ENDPOINTS = Object.freeze({
   STATUS: 'status',
@@ -28,6 +29,9 @@ export const ENDPOINTS = Object.freeze({
   PROBE: 'probe',
   SETTINGS_SET: 'settings.set',
   RECONNECT: 'reconnect',
+  REGISTER_START: 'register.start',
+  REGISTER_POLL: 'register.poll',
+  REGISTER_CANCEL: 'register.cancel',
 } as const);
 
 export type Endpoint = (typeof ENDPOINTS)[keyof typeof ENDPOINTS];
@@ -43,6 +47,7 @@ export interface PanelDeps {
   credentials: CredentialStore;
   settings: LocalConfigStore;
   config: NormalizedConfig;
+  registration: AppRegistration;
   logger: PluginLogger;
   /** 自检成功时把机器人身份交回入口（@ 提及需要它）；带上是哪个 App。 */
   onProbe?: (check: LarkCredentialCheck, app: LarkCredentials) => void;
@@ -171,6 +176,18 @@ export async function handleEndpoint(deps: PanelDeps, endpoint: string, payload:
       await deps.runtime.applySettings(patch as never);
       return snapshotOf(deps);
     }
+
+    case ENDPOINTS.REGISTER_START: {
+      const input = payloadOf(payload);
+      const domain = domainOf(input.domain) ?? deps.config.domain;
+      return { registration: await deps.registration.start(domain) };
+    }
+
+    case ENDPOINTS.REGISTER_POLL:
+      return { registration: deps.registration.poll() };
+
+    case ENDPOINTS.REGISTER_CANCEL:
+      return { registration: deps.registration.cancel() };
 
     case ENDPOINTS.RECONNECT: {
       await deps.runtime.reconnect();

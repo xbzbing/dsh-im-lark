@@ -20,7 +20,8 @@ import type { PluginContext } from './host-context.ts';
 import { LarkConnection } from './lark/connection.ts';
 import { registerLarkCommand } from './command.ts';
 import { registerPanelRpc } from './panel-host.ts';
-import { sdkFactories } from './lark/sdk.ts';
+import { registerApp, sdkFactories } from './lark/sdk.ts';
+import { AppRegistration } from './registration.ts';
 import type { LarkCredentials } from './lark/types.ts';
 import type { BridgeHandle, BridgeHealth, MySuperagentService } from './protocol.ts';
 import { LarkRuntime } from './runtime.ts';
@@ -192,6 +193,16 @@ export async function apply(ctx: PluginContext, config: PluginConfig | unknown =
     onSettings: () => applyRouting(),
   });
 
+  // 扫码创建应用：凭据只在 SDK 授权成功后才落盘，再让运行期按新凭据重连。
+  const registration = new AppRegistration({
+    start: (input) => registerApp(input),
+    save: async (app) => {
+      await credentials.save(app);
+    },
+    reload: () => runtime.reloadCredentials(),
+    logger,
+  });
+
   // 先登记清理，再跑异步初始化：启动失败或宿主提前卸载都不会留下半截运行期。
   ctx.effect?.(
     () => () => {
@@ -245,6 +256,7 @@ export async function apply(ctx: PluginContext, config: PluginConfig | unknown =
     credentials,
     settings,
     config: normalized,
+    registration,
     logger,
     onProbe: (check, app) => {
       if (check.ok && check.botOpenId !== undefined && check.botOpenId !== '' && stack?.app.appId === app.appId) {

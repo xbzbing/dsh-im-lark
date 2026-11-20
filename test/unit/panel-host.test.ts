@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import { LocalConfigStore, normalizePluginConfig } from '../../src/host/config.ts';
 import { ENDPOINTS, RPC_ENDPOINT, RPC_PATH, handleEndpoint, registerPanelRpc, snapshotOf } from '../../src/host/panel-host.ts';
 import type { PanelDeps } from '../../src/host/panel-host.ts';
+import { AppRegistration } from '../../src/host/registration.ts';
 import type { LarkRuntime, RuntimeStatus } from '../../src/host/runtime.ts';
 import { CredentialStore } from '../../src/host/state/credentials.ts';
 import { PANEL_CONTRACT } from '../../src/shared/version.ts';
@@ -17,6 +18,7 @@ interface Harness {
   settings: LocalConfigStore;
   calls: { reload: number; reconnect: number; applied: Record<string, unknown>[] };
   status: RuntimeStatus;
+  registrations: string[];
 }
 
 async function harness(dir: string, options: { withCredentials?: boolean } = {}): Promise<Harness> {
@@ -54,12 +56,25 @@ async function harness(dir: string, options: { withCredentials?: boolean } = {})
     },
   } as unknown as LarkRuntime;
 
+  const registrations: string[] = [];
+  const registration = new AppRegistration({
+    start: async (input) => {
+      registrations.push(input.domain);
+      input.onUrl({ url: 'https://accounts.feishu.cn/oauth/v1/app/registration?user_code=TEST', expireIn: 600 });
+      return await new Promise<never>(() => {});
+    },
+    save: async () => {},
+    reload: async () => {},
+    logger: {},
+  });
+
   return {
-    deps: { runtime, credentials, settings, config, logger: {} },
+    deps: { runtime, credentials, settings, config, registration, logger: {} },
     credentials,
     settings,
     calls,
     status,
+    registrations,
   };
 }
 
@@ -170,6 +185,40 @@ test('面板：快照里的契约版本与共享常量一致', async () => {
     const { deps } = await harness(dir.path);
     assert.equal(snapshotOf(deps).contract, PANEL_CONTRACT);
     assert.equal(snapshotOf(deps).config.maxText, 2000);
+  });
+});
+
+test('面板：扫码创建应用的 start/poll/cancel 三个端点', async () => {
+  await withTempDir(async (dir) => {
+    const { deps, registrations } = await harness(dir.path);
+
+    const started = (await handleEndpoint(deps, ENDPOINTS.REGISTER_START, { domain: 'lark' })) as {
+      registration: { state: string; url: string | null; qr: { size: number; modules: number[] } | null };
+    };
+    assert.deepEqual(registrations, ['lark']);
+    assert.equal(started.registration.state, 'waiting');
+    assert.match(started.registration.url ?? '', /accounts\.feishu\.cn/u);
+    assert.ok(started.registration.qr !== null);
+    assert.equal(started.registration.qr.modules.length, started.registration.qr.size ** 2);
+
+    const polled = (await handleEndpoint(deps, ENDPOINTS.REGISTER_POLL, {})) as { registration: Record<string, unknown> };
+    assert.equal(polled.registration.state, 'waiting');
+    // 轮询不重复传二维码矩阵。
+    assert.equal('qr' in polled.registration, false);
+
+    const cancelled = (await handleEndpoint(deps, ENDPOINTS.REGISTER_CANCEL, {})) as {
+      registration: { state: string };
+    };
+    assert.equal(cancelled.registration.state, 'idle');
+  });
+});
+
+test('面板：register.start 缺省使用配置里的平台', async () => {
+  await withTempDir(async (dir) => {
+    const { deps, registrations } = await harness(dir.path);
+    await handleEndpoint(deps, ENDPOINTS.REGISTER_START, {});
+    assert.deepEqual(registrations, ['feishu']);
+    await handleEndpoint(deps, ENDPOINTS.REGISTER_CANCEL, {});
   });
 });
 

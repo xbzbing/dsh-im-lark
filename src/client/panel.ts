@@ -9,10 +9,12 @@
  */
 
 import iconUrl from '../../assets/icon.svg';
-import { ENDPOINTS, REFRESH_INTERVAL_MS } from './constants.ts';
+import { ENDPOINTS, REFRESH_INTERVAL_MS, REGISTER_POLL_MS } from './constants.ts';
 import { dotOf, errorText, isContractMismatch } from './logic.ts';
 import type { Translate } from './locales.ts';
 import { h, useCallback, useEffect, useState } from './platform.ts';
+import { RegisterSection } from './register.ts';
+import type { RegistrationSnapshot } from './register.ts';
 import { ensureStyles } from './styles.ts';
 import { Button, IconRefresh, Input, Switch } from './ui.ts';
 
@@ -52,6 +54,7 @@ export function LarkSettingsPanel(props: any) {
   const [appId, setAppId] = useState('');
   const [appSecret, setAppSecret] = useState('');
   const [domain, setDomain] = useState('feishu');
+  const [registration, setRegistration] = useState<RegistrationSnapshot | null>(null);
 
   const applySnapshot = useCallback((next: Snapshot) => {
     setSnapshot(next);
@@ -92,6 +95,66 @@ export function LarkSettingsPanel(props: any) {
       setBusy('');
     }
   };
+
+  const startRegistration = () => {
+    void run('register', async () => {
+      const result = await rpcCall<{ registration: RegistrationSnapshot }>(ENDPOINTS.registerStart, { domain });
+      setRegistration(result.registration);
+    });
+  };
+
+  const cancelRegistration = () => {
+    void run('register-cancel', async () => {
+      const result = await rpcCall<{ registration: RegistrationSnapshot }>(ENDPOINTS.registerCancel);
+      setRegistration(result.registration);
+    });
+  };
+
+  const copyRegistrationLink = () => {
+    const url = registration?.url;
+    if (url === null || url === undefined) return;
+    void (async () => {
+      try {
+        await navigator.clipboard.writeText(url);
+        setNotice(t('register.copied'));
+      } catch {
+        setError(t('error.generic'));
+      }
+    })();
+  };
+
+  const registrationState = registration?.state;
+  useEffect(() => {
+    if (registrationState !== 'waiting') return;
+    let disposed = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const tick = async (): Promise<void> => {
+      try {
+        const result = await rpcCall<{ registration: RegistrationSnapshot }>(ENDPOINTS.registerPoll);
+        if (disposed) return;
+        setRegistration((current) =>
+          current === null ? current : { ...current, ...result.registration, qr: result.registration.qr ?? current.qr },
+        );
+        if (result.registration.state === 'done') {
+          setNotice(t('register.done', { appId: result.registration.appIdTail ?? '' }));
+          await refresh(true);
+        } else if (result.registration.state === 'error') {
+          setError(result.registration.error ?? t('register.failed'));
+        }
+      } catch (cause) {
+        if (!disposed) setError(errorText(t, cause));
+      } finally {
+        if (!disposed) timer = setTimeout(tick, REGISTER_POLL_MS);
+      }
+    };
+
+    timer = setTimeout(tick, REGISTER_POLL_MS);
+    return () => {
+      disposed = true;
+      if (timer !== undefined) clearTimeout(timer);
+    };
+  }, [registrationState, rpcCall, refresh, t]);
 
   const saveSettings = (patch: Record<string, unknown>) =>
     run('settings', async () => rpcCall<Snapshot>(ENDPOINTS.setSettings, patch));
@@ -159,7 +222,8 @@ export function LarkSettingsPanel(props: any) {
   const status = snapshot?.status;
   const state = status?.connection.state ?? 'idle';
   const domainLabel = (snapshot?.config.domain ?? 'feishu') === 'lark' ? t('credentials.domainLark') : t('credentials.domainFeishu');
-  const busySave = busy === 'credentials' || busy === 'probe' || busy === 'clear';
+  const busySave =
+    busy === 'credentials' || busy === 'probe' || busy === 'clear' || busy === 'register' || busy === 'register-cancel';
 
   return h(
     'div',
@@ -229,6 +293,15 @@ export function LarkSettingsPanel(props: any) {
       { className: 'lark-card' },
       h('div', { className: 'lark-card-title' }, t('credentials.title')),
       h('div', { className: 'lark-card-hint' }, t('credentials.hint')),
+      h(RegisterSection, {
+        registration,
+        busy,
+        t,
+        onStart: startRegistration,
+        onCancel: cancelRegistration,
+        onCopy: copyRegistrationLink,
+      }),
+      h('div', { className: 'lark-divider' }, t('register.manual')),
       h(
         'div',
         { className: 'lark-grid-2' },
