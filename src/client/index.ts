@@ -5,11 +5,13 @@
  * 是 `window.__ModuleLoader__.load({ id, factory })`；`react` 与 `@deepseek-ai/*`
  * 保持 external，由宿主的模块表提供。
  *
- * 注册槽位只有一个：`plugins.bundle.config`，key 是包名——插件页按包名分发配置
- * 节，注册即表示这一页要显示。
+ * 注册两个槽位，指向同一个面板：
+ * - `settings.section`：设置侧栏里的独立入口（和「微信」「如流」并列），用户找得到；
+ * - `plugins.bundle.config`：插件页里按包名分发的配置节，注册即表示这一页要显示。
+ * 只注册后者时，侧栏没有入口，只能从「内置插件」翻到插件页。
  */
 
-import { BUNDLE_CONFIG_SLOT, PACKAGE_NAME, PANEL_NS } from './constants.ts';
+import { BUNDLE_CONFIG_SLOT, PACKAGE_NAME, PANEL_NS, SETTINGS_ORDER, SETTINGS_SLOT } from './constants.ts';
 import { en, fallbackTranslate, zh } from './locales.ts';
 import type { Translate } from './locales.ts';
 import { createRpcCall } from './logic.ts';
@@ -44,8 +46,26 @@ export function apply(ctx: any): void {
 
   const rpcCall = createRpcCall(ctx.connection);
   const dependencies = () => ({ t, rpcCall });
+  const label = () => t('panel.title');
 
   if (typeof ctx.slots?.inject !== 'function' || typeof ctx.slots?.register !== 'function') return;
+
+  ctx.effect(() => {
+    const dispose = ctx.slots.inject(SETTINGS_SLOT, () =>
+      ctx.slots.register(
+        {
+          name: SETTINGS_SLOT,
+          id: PACKAGE_NAME,
+          order: SETTINGS_ORDER,
+          label,
+          locale: PANEL_NS,
+          inject: dependencies,
+        },
+        LarkSettingsPanel,
+      ),
+    );
+    return () => dispose?.();
+  }, 'dsh-im-lark: 设置页');
 
   ctx.effect(() => {
     const dispose = ctx.slots.inject(BUNDLE_CONFIG_SLOT, () =>

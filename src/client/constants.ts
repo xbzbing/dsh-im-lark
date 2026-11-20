@@ -15,6 +15,12 @@ export const PACKAGE_NAME = 'dsh-im-lark';
 /** 插件页里按包名分发的配置槽位。 */
 export const BUNDLE_CONFIG_SLOT = 'plugins.bundle.config';
 
+/** 设置侧栏的独立入口：不注册它，插件只能从「内置插件」页里找。 */
+export const SETTINGS_SLOT = 'settings.section';
+
+/** 侧栏顺序：排在微信（24）之后，和 IM 类插件连在一起。 */
+export const SETTINGS_ORDER = 25;
+
 export const PANEL_NS = 'dsh-im-lark';
 
 export const REFRESH_INTERVAL_MS = 15_000;
