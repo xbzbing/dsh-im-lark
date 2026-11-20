@@ -19,5 +19,17 @@ export const CHANNEL_VERSION = '1';
  */
 export const PANEL_CONTRACT = 1;
 
-/** 面板 RPC 的逻辑通道（客户端 `connection.rpc.call` 的第一段）。 */
+/**
+ * 面板 RPC 的通道名。
+ *
+ * 浏览器 `connection.rpc.call(channel, endpoint, payload)` 会 POST 到
+ * `<channel>/<endpoint>`，所以 host 半挂 exact 路由 `/api/dsh-im-lark`，
+ * 客户端用 channel `/api` + endpoint `dsh-im-lark`。
+ */
 export const RPC_CHANNEL = '/dsh-im-lark';
+
+/** 客户端调用的 endpoint 段（`RPC_CHANNEL` 去掉前导斜杠）。 */
+export const RPC_ENDPOINT = RPC_CHANNEL.replace(/^\/+/u, '');
+
+/** 宿主 exact 路由的挂载前缀。 */
+export const RPC_PREFIX = '/api';

@@ -6,12 +6,20 @@ import { apply, inject, name } from '../../index.ts';
 import type { BridgeProvider } from '../../src/host/protocol.ts';
 import { withTempDir } from './helpers/temp.ts';
 
-/** 只实现本插件用到的宿主表面：effect / inject / on / logger / connection.rpc。 */
+interface CapturedRoute {
+  path: string;
+  methods: string[];
+  requestBody: string;
+  fetch: (request: Request) => Promise<Response>;
+}
+
+/** 只实现本插件用到的宿主表面：effect / inject / on / logger / connection.fetch。 */
 function fakeContext(services: Record<string, unknown> = {}) {
   const cleanups: Array<() => void> = [];
   const listeners: Array<string> = [];
   const cleanupsByService = new Map<string, Array<() => void>>();
-  let rpcHandler: ((endpoint: string, payload: unknown) => Promise<unknown>) | null = null;
+  let route: CapturedRoute | null = null;
+  let rpcSeq = 0;
 
   const ctx = {
     logger: {},
@@ -37,20 +45,36 @@ function fakeContext(services: Record<string, unknown> = {}) {
       return () => {};
     },
     connection: {
-      rpc: {
-        handle(_channel: string, handler: (endpoint: string, payload: unknown) => Promise<unknown>) {
-          rpcHandler = handler;
+      fetch: {
+        register(candidate: CapturedRoute) {
+          route = candidate;
           return () => {
-            rpcHandler = null;
+            if (route === candidate) route = null;
           };
         },
       },
     },
   };
 
+  // 与浏览器一致：走 `POST /api/dsh-im-lark` 的信封，取回 result。
   const callRpc = async (endpoint: string, payload?: unknown) => {
-    assert.ok(rpcHandler !== null, '面板 RPC 未注册');
-    return (await rpcHandler(endpoint, payload)) as { ok: boolean; value?: any; error?: any };
+    assert.ok(route !== null, '面板 RPC 未注册');
+    assert.equal(route.path, '/api/dsh-im-lark');
+    const rpcId = `entry-test-${++rpcSeq}`;
+    const response = await route.fetch(
+      new Request(`http://127.0.0.1${route.path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          type: 'client-request',
+          rpcId,
+          method: 'dsh-im-lark',
+          payload: { method: endpoint, payload },
+        }),
+      }),
+    );
+    const body = (await response.json()) as { result: { ok: boolean; value?: any; error?: any } };
+    return body.result;
   };
 
   return { ctx, cleanups, listeners, callRpc };

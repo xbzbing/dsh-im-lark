@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { LocalConfigStore, normalizePluginConfig } from '../../src/host/config.ts';
-import { ENDPOINTS, handleEndpoint, snapshotOf } from '../../src/host/panel-host.ts';
+import { ENDPOINTS, RPC_ENDPOINT, RPC_PATH, handleEndpoint, registerPanelRpc, snapshotOf } from '../../src/host/panel-host.ts';
 import type { PanelDeps } from '../../src/host/panel-host.ts';
 import type { LarkRuntime, RuntimeStatus } from '../../src/host/runtime.ts';
 import { CredentialStore } from '../../src/host/state/credentials.ts';
@@ -170,5 +170,83 @@ test('面板：快照里的契约版本与共享常量一致', async () => {
     const { deps } = await harness(dir.path);
     assert.equal(snapshotOf(deps).contract, PANEL_CONTRACT);
     assert.equal(snapshotOf(deps).config.maxText, 2000);
+  });
+});
+
+test('面板路由：POST /api/dsh-im-lark 按信封分发，非 POST 回 405，清理后摘掉', async () => {
+  await withTempDir(async (dir) => {
+    const { deps } = await harness(dir.path);
+    const routes: any[] = [];
+    let cleanup: (() => void) | undefined;
+    const connection = {
+      fetch: {
+        register(route: unknown) {
+          routes.push(route);
+          return () => {};
+        },
+      },
+    };
+    const ctx: any = {
+      logger: {},
+      connection,
+      effect(execute: () => () => void) {
+        cleanup = execute();
+      },
+      inject(_services: string[], install: (scope: unknown) => void) {
+        // 真实宿主把同一个 scope 交给 install：effect 也挂在这个 scope 上。
+        install(ctx);
+      },
+    };
+
+    registerPanelRpc(ctx, deps);
+    assert.equal(routes.length, 1);
+    assert.equal(routes[0].path, RPC_PATH);
+    assert.equal(RPC_PATH, '/api/dsh-im-lark');
+    assert.deepEqual(routes[0].methods, ['POST']);
+    assert.equal(RPC_ENDPOINT, 'dsh-im-lark');
+
+    const call = async (envelope: unknown, init: RequestInit = {}) => {
+      const request = new Request(`http://localhost${RPC_PATH}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(envelope),
+        ...init,
+      });
+      const response = await routes[0].fetch(request);
+      return { status: response.status, body: (await response.json()) as any };
+    };
+
+    const okCall = await call({ type: 'client-request', rpcId: 'r1', method: RPC_ENDPOINT, payload: { method: 'status', payload: {} } });
+    assert.equal(okCall.status, 200);
+    assert.equal(okCall.body.type, 'server-response');
+    assert.equal(okCall.body.rpcId, 'r1');
+    assert.equal(okCall.body.result.ok, true);
+    assert.equal(okCall.body.result.value.contract, PANEL_CONTRACT);
+
+    const unknown = await call({ type: 'client-request', rpcId: 'r2', method: RPC_ENDPOINT, payload: { method: 'nope' } });
+    assert.equal(unknown.body.result.ok, false);
+    assert.equal(unknown.body.result.error.code, 'unknown-endpoint');
+
+    const wrongChannel = await call({ type: 'client-request', rpcId: 'r3', method: 'other', payload: { method: 'status' } });
+    assert.equal(wrongChannel.body.result.error.code, 'bad-request');
+
+    const notJson = await (await routes[0].fetch(
+      new Request(`http://localhost${RPC_PATH}`, { method: 'POST', headers: { 'content-type': 'text/plain' }, body: 'x' }),
+    )).status;
+    assert.equal(notJson, 415);
+
+    const getStatus = await (await routes[0].fetch(new Request(`http://localhost${RPC_PATH}`, { method: 'GET' }))).status;
+    assert.equal(getStatus, 405);
+
+    cleanup?.();
+    // 清理后旧路由闭包必须断开：再打一次应回 503，而不是继续分发。
+    const after = await routes[0].fetch(
+      new Request(`http://localhost${RPC_PATH}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ type: 'client-request', rpcId: 'r4', method: RPC_ENDPOINT, payload: { method: 'status' } }),
+      }),
+    );
+    assert.equal(after.status, 503);
   });
 });

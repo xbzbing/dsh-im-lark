@@ -5,7 +5,7 @@
  * `invalid-config` 时该显示什么，都在这里定，组件只负责渲染。
  */
 
-import { PANEL_CONTRACT, RPC_CHANNEL, RPC_TIMEOUT_MS } from './constants.ts';
+import { PANEL_CONTRACT, RPC_ENDPOINT, RPC_PREFIX, RPC_TIMEOUT_MS } from './constants.ts';
 import type { Translate } from './locales.ts';
 
 export interface CodedError extends Error {
@@ -36,7 +36,13 @@ export function createRpcCall(connection: unknown) {
     if (rpc === undefined || typeof rpc.call !== 'function') {
       throw codedError('connection-unavailable', '当前页面没有可用的 Host 连接');
     }
-    const raw = await rpc.call(RPC_CHANNEL, endpoint, payload, signal ?? AbortSignal.timeout(RPC_TIMEOUT_MS));
+    // channel/endpoint 会拼成 POST `<channel>/<endpoint>`：和 host 的 exact 路由一致。
+    const raw = await rpc.call(
+      RPC_PREFIX,
+      RPC_ENDPOINT,
+      { method: endpoint, payload },
+      signal ?? AbortSignal.timeout(RPC_TIMEOUT_MS),
+    );
     return unwrapResult(raw) as T;
   };
 }

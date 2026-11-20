@@ -32,9 +32,24 @@ export type RpcHandler = (
   peer: unknown,
 ) => Promise<RpcResult<unknown>>;
 
-/** 宿主 `connection` 服务里本插件用到的部分：注册一条逻辑 RPC 通道。 */
+/**
+ * 宿主 `connection` 服务里本插件用到的部分。
+ *
+ * 面板走 `fetch.register`：一条 exact 的 HTTP 路由，请求体是宿主的 RPC 信封。
+ * `rpc.handle` 是 socket 通道注册，和浏览器的 `rpc.call` 对不上（会 405）。
+ */
+export interface FetchRoute {
+  path: string;
+  methods: string[];
+  requestBody: 'buffered';
+  fetch(request: Request): Promise<Response>;
+}
+
 export interface ConnectionLike {
-  rpc: {
+  fetch?: {
+    register(route: FetchRoute): () => void;
+  };
+  rpc?: {
     handle(channel: string, handler: RpcHandler): () => Promise<void>;
   };
 }

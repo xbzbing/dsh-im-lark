@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { PANEL_CONTRACT, RPC_CHANNEL } from '../../src/client/constants.ts';
+import { PANEL_CONTRACT, RPC_CHANNEL, RPC_ENDPOINT, RPC_PREFIX } from '../../src/client/constants.ts';
 import { createRpcCall, dotOf, errorText, isContractMismatch, unwrapResult } from '../../src/client/logic.ts';
 import { fallbackTranslate } from '../../src/client/locales.ts';
 import { PANEL_CONTRACT as HOST_CONTRACT, RPC_CHANNEL as HOST_CHANNEL } from '../../src/shared/version.ts';
@@ -24,7 +24,7 @@ test('RPC 信封：失败时带上 code 与可读文案', () => {
   assert.throws(() => unwrapResult('nope'), (error: any) => error.code === 'invalid-response');
 });
 
-test('RPC 调用：走约定的逻辑通道与端点；没有连接时给出可操作错误', async () => {
+test('RPC 调用：POST 到 /api/<通道名>，端点与方法包在 payload 里；没有连接时给出可操作错误', async () => {
   const calls: unknown[][] = [];
   const rpcCall = createRpcCall({
     rpc: {
@@ -37,8 +37,11 @@ test('RPC 调用：走约定的逻辑通道与端点；没有连接时给出可�
 
   const value = await rpcCall('status', {});
   assert.deepEqual(value, { contract: 1 });
-  assert.equal(calls[0]![0], RPC_CHANNEL);
-  assert.equal(calls[0]![1], 'status');
+  assert.equal(calls[0]![0], RPC_PREFIX);
+  assert.equal(calls[0]![0], '/api');
+  assert.equal(calls[0]![1], RPC_ENDPOINT);
+  assert.equal(calls[0]![1], 'dsh-im-lark');
+  assert.deepEqual(calls[0]![2], { method: 'status', payload: {} });
 
   await assert.rejects(createRpcCall(undefined)('status'), (error: any) => error.code === 'connection-unavailable');
 });

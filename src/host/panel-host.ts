@@ -1,5 +1,9 @@
 /**
- * 面板 RPC：宿主的 `connection.rpc` 通道，浏览器经 `connection.rpc.call` 访问。
+ * 面板 RPC：挂一条 `POST /api/dsh-im-lark` 的 exact 路由，浏览器用
+ * `connection.rpc.call('/api', 'dsh-im-lark', { method, payload })` 访问。
+ *
+ * 信封与宿主其它插件一致：请求 `{type:'client-request', rpcId, method, payload}`，
+ * 响应 `{type:'server-response', rpcId, result:{ok, value|error}}`。
  *
  * 端点一律「窄接口」：只接受字段明确的补丁对象，逐字段校验类型与范围，认不
  * 出来就回 `invalid-config`。浏览器发来的 JSON 是不可信输入，不把它直接塞进
@@ -8,10 +12,10 @@
  * 凭据只在保存时经过这里；读取只回 App ID 尾号（`RuntimeStatus.appIdTail`）。
  */
 
-import { PANEL_CONTRACT, PLUGIN_VERSION, RPC_CHANNEL } from '../shared/version.ts';
+import { PANEL_CONTRACT, PLUGIN_VERSION, RPC_CHANNEL, RPC_ENDPOINT, RPC_PREFIX } from '../shared/version.ts';
 import type { LocalConfigStore, NormalizedConfig } from './config.ts';
 import { errorDetail, injectOptional } from './host-context.ts';
-import type { PluginContext, PluginLogger, RpcResult } from './host-context.ts';
+import type { ConnectionLike, PluginContext, PluginLogger, RpcResult } from './host-context.ts';
 import type { LarkRuntime, RuntimeStatus } from './runtime.ts';
 import type { CredentialStore } from './state/credentials.ts';
 import { probeCredentials } from './state/credentials.ts';
@@ -27,6 +31,12 @@ export const ENDPOINTS = Object.freeze({
 } as const);
 
 export type Endpoint = (typeof ENDPOINTS)[keyof typeof ENDPOINTS];
+
+/** 路由路径：宿主的 exact fetch 路由挂在 `/api` 下。 */
+export const RPC_PATH = `${RPC_PREFIX}${RPC_CHANNEL}`;
+
+/** 客户端 `rpc.call` 的 endpoint 段：与客户端共享同一份常量。 */
+export { RPC_ENDPOINT };
 
 export interface PanelDeps {
   runtime: LarkRuntime;
@@ -172,41 +182,128 @@ export async function handleEndpoint(deps: PanelDeps, endpoint: string, payload:
   }
 }
 
-/** 注册 RPC 通道；宿主没有 connection 服务时静默跳过（CLI/桌面组合）。 */
+/**
+ * 同路径路由在进程内唯一；状态挂到 `globalThis`，HMR 重载时新旧模块实例共享它。
+ *
+ * 重载重叠期新实例只接管 `handler`，不重复注册（重复注册宿主会抛“路由已存在”）；
+ * 摘路由由真正注册它的实例负责，且只在自己仍是当前 handler 时清空。
+ */
+interface PanelRoute {
+  handler: ((request: Request) => Promise<Response>) | null;
+  off: (() => void) | null;
+}
+
+const ROUTE_KEY = Symbol.for('dsh-im-lark:panel-route');
+
+function panelRoute(): PanelRoute {
+  const globals = globalThis as unknown as Record<symbol, PanelRoute | undefined>;
+  const existing = globals[ROUTE_KEY];
+  if (existing !== undefined) return existing;
+  const created: PanelRoute = { handler: null, off: null };
+  globals[ROUTE_KEY] = created;
+  return created;
+}
+
+function responseOf(body: unknown): Response {
+  return Response.json(body);
+}
+
+function envelopeResponse(rpcId: string, result: RpcResult<unknown>): Response {
+  return responseOf({ type: 'server-response', rpcId, result });
+}
+
+/** 注册面板路由；宿主没有 connection.fetch 时静默跳过（CLI/桌面组合）。 */
 export function registerPanelRpc(ctx: PluginContext, deps: PanelDeps): void {
   const install = (scope: PluginContext): void => {
     const connection = scope.connection;
-    if (connection === undefined || typeof connection.rpc?.handle !== 'function') {
-      deps.logger.warn?.('面板 RPC 未注册：宿主未提供 connection.rpc');
-      return;
-    }
 
-    const handler = async (endpoint: string, payload: unknown): Promise<RpcResult<unknown>> => {
+    const dispatch = async (request: Request): Promise<Response> => {
+      if (request.method !== 'POST') return new Response('method not allowed', { status: 405 });
+      const contentType = request.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase();
+      if (contentType !== 'application/json') {
+        return new Response('content type must be application/json', { status: 415 });
+      }
+
+      let envelope: unknown;
       try {
-        return ok(await handleEndpoint(deps, endpoint, payload));
+        envelope = await request.json();
+      } catch {
+        return new Response('body is not JSON', { status: 400 });
+      }
+
+      const record = typeof envelope === 'object' && envelope !== null ? (envelope as Record<string, unknown>) : {};
+      const rpcId = typeof record.rpcId === 'string' ? record.rpcId : 'invalid-request';
+      const call = record.payload;
+      const callRecord = typeof call === 'object' && call !== null ? (call as Record<string, unknown>) : {};
+      const endpoint = typeof callRecord.method === 'string' ? callRecord.method : '';
+      const invalid =
+        record.type !== 'client-request' || typeof record.rpcId !== 'string' || record.method !== RPC_ENDPOINT || endpoint === '';
+      if (invalid) return envelopeResponse(rpcId, bad('bad-request', '面板请求格式不合法'));
+
+      try {
+        return envelopeResponse(rpcId, ok(await handleEndpoint(deps, endpoint, callRecord.payload)));
       } catch (error) {
         deps.logger.warn?.(`面板 RPC 失败 endpoint=${endpoint}`, errorDetail(error));
         if (typeof (error as CodedError).code === 'string') {
-          return bad((error as CodedError).code, (error as Error).message);
+          return envelopeResponse(rpcId, bad((error as CodedError).code, (error as Error).message));
         }
-        return bad('internal', '面板操作失败');
+        // 未分类的内部错误可能带本机路径，只给通用文案。
+        return envelopeResponse(rpcId, bad('internal', '面板操作失败'));
       }
     };
 
-    const register = (): (() => Promise<void>) => {
-      const dispose = connection.rpc.handle(RPC_CHANNEL, handler);
-      return () => Promise.resolve(dispose());
+    const register = (link: ConnectionLike | undefined): (() => void) | undefined => {
+      const face = link?.fetch;
+      if (face === undefined || typeof face.register !== 'function') {
+        deps.logger.warn?.('面板 RPC 未注册：宿主未提供 connection.fetch');
+        return undefined;
+      }
+      const state = panelRoute();
+
+      if (state.handler !== null) {
+        // 同路径路由已在（HMR 重叠）：接管处理函数，路由归创建它的实例。
+        state.handler = dispatch;
+        return () => {
+          if (state.handler === dispatch) state.handler = null;
+        };
+      }
+
+      let ownOff: (() => void) | null = null;
+      try {
+        const dispose = face.register({
+          path: RPC_PATH,
+          methods: ['POST'],
+          requestBody: 'buffered',
+          fetch: (request: Request) =>
+            state.handler === null ? Promise.resolve(new Response('插件未运行', { status: 503 })) : state.handler(request),
+        });
+        ownOff = typeof dispose === 'function' ? dispose : null;
+      } catch (error) {
+        // 进程里已有本插件注册的同路径路由（旧实例还没卸完）：接管 handler，不再注册。
+        deps.logger.warn?.('面板 RPC 路由已存在，改为接管现有路由', errorDetail(error));
+      }
+
+      state.handler = dispatch;
+      state.off = ownOff;
+      return () => {
+        // 已被后继实例接管时不动路由，摘除交给最后卸下的那个。
+        if (state.handler !== dispatch) return;
+        state.handler = null;
+        const release = state.off;
+        state.off = null;
+        if (release !== null) release();
+      };
     };
 
     if (typeof scope.effect === 'function') {
       scope.effect(() => {
-        const dispose = register();
+        const dispose = register(connection);
         return () => {
-          void dispose();
+          if (typeof dispose === 'function') dispose();
         };
       }, 'dsh-im-lark: 面板 RPC');
     } else {
-      void register();
+      register(connection);
     }
   };
 

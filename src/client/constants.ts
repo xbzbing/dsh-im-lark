@@ -6,9 +6,9 @@
  * 提示重启，不拿缺字段的响应硬渲染。
  */
 
-import { PANEL_CONTRACT, PLUGIN_VERSION, RPC_CHANNEL } from '../shared/version.ts';
+import { PANEL_CONTRACT, PLUGIN_VERSION, RPC_CHANNEL, RPC_ENDPOINT, RPC_PREFIX } from '../shared/version.ts';
 
-export { PANEL_CONTRACT, PLUGIN_VERSION, RPC_CHANNEL };
+export { PANEL_CONTRACT, PLUGIN_VERSION, RPC_CHANNEL, RPC_ENDPOINT, RPC_PREFIX };
 
 export const PACKAGE_NAME = 'dsh-im-lark';
 
