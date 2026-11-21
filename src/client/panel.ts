@@ -81,6 +81,8 @@ export function LarkSettingsPanel(props: any) {
   const [clearOpen, setClearOpen] = useState(false);
   /** 凭据卡片是否展开：null 跟随「是否已配置」自动决定，用户点过就以手动为准。 */
   const [credentialsExpanded, setCredentialsExpanded] = useState<boolean | null>(null);
+  /** 独立模式卡片是否展开：null 跟随「是否接入超级助理」自动决定。 */
+  const [directExpanded, setDirectExpanded] = useState<boolean | null>(null);
   /** 对话框是否还开着：发起授权是异步的，关掉之后回来的结果要自己取消。 */
   const registerOpenRef = useRef(false);
   const [workspaces, setWorkspaces] = useState<WorkspaceCatalog | null>(null);
@@ -336,6 +338,9 @@ export function LarkSettingsPanel(props: any) {
     busy === 'credentials' || busy === 'probe' || busy === 'clear' || busy === 'register' || busy === 'register-cancel';
   const credentialsConfigured = status !== undefined && status.appIdTail !== null;
   const credentialsOpen = credentialsExpanded ?? !credentialsConfigured;
+  /** 接入超级助理后，独立模式的会话与两处提醒都交给核心，卡片默认收起。 */
+  const coreActive = settings?.superagent === true;
+  const directOpen = directExpanded ?? !coreActive;
 
   return h(
     'div',
@@ -429,7 +434,7 @@ export function LarkSettingsPanel(props: any) {
             'aria-controls': 'lark-credentials-body',
             onClick: () => setCredentialsExpanded(!credentialsOpen),
           },
-          credentialsOpen ? t('credentials.collapse') : t('credentials.expand'),
+          credentialsOpen ? t('common.collapse') : t('common.expand'),
           IconChevronDown === null ? null : h(IconChevronDown, { size: 14 }),
         ),
       ),
@@ -455,7 +460,7 @@ export function LarkSettingsPanel(props: any) {
       credentialsOpen
         ? h(
             'div',
-            { id: 'lark-credentials-body', className: 'lark-credentials-body' },
+            { id: 'lark-credentials-body', className: 'lark-card-body' },
             h('div', { className: 'lark-card-hint' }, t('credentials.hint')),
             h(
               'div',
@@ -523,148 +528,180 @@ export function LarkSettingsPanel(props: any) {
     h(
       'section',
       { className: 'lark-card' },
-      h('div', { className: 'lark-card-title' }, t('longTask.title')),
-      h('div', { className: 'lark-card-hint' }, t('longTask.hint')),
-      toggleRow(
-        h(Switch, {
-          checked: settings?.longTaskReminders === true,
-          disabled: settings?.superagent === true || busy !== '',
-          onChange: (value: boolean) => toggle('longTaskReminders', value),
-          label: t('longTask.enabled'),
-        }),
-        t('longTask.enabled'),
-        settings?.superagent === true ? t('reminder.coreHint') : t('longTask.enabledHint'),
-      ),
-      fieldRow(
-        t('longTask.threshold'),
-        h(
-          'div',
-          { className: 'lark-inline-save' },
-          h(Input, {
-            className: 'lark-input lark-input-narrow',
-            value: longMinutes ?? '',
-            inputMode: 'numeric',
-            disabled: settings?.superagent === true || settings?.longTaskReminders !== true,
-            onChange: (event: any) => setLongMinutes(event.target.value),
-          }),
-          h('span', { className: 'lark-unit' }, t('common.minutes')),
-          h(
-            Button,
-            {
-              variant: 'outline',
-              disabled: busy !== '' || settings?.superagent === true || settings?.longTaskReminders !== true || !longValid,
-              onClick: saveLongMinutes,
-            },
-            t('common.save'),
-          ),
-        ),
-      ),
-      longText !== '' && !longValid
-        ? h('div', { className: 'lark-banner', 'data-tone': 'error' }, t('longTask.thresholdInvalid'))
-        : null,
-      toggleRow(
-        h(Switch, {
-          checked: settings?.failureReminders === true,
-          disabled: settings?.superagent === true || busy !== '',
-          onChange: (value: boolean) => toggle('failureReminders', value),
-          label: t('longTask.failure'),
-        }),
-        t('longTask.failure'),
-        settings?.superagent === true ? t('reminder.coreHint') : t('longTask.failureHint'),
-      ),
-    ),
-
-    h(
-      'section',
-      { className: 'lark-card' },
-      h('div', { className: 'lark-card-title' }, t('direct.title')),
-      h('div', { className: 'lark-card-hint' }, t('direct.hint')),
-      toggleRow(
-        h(Switch, {
-          checked: settings?.directBusyMode === 'steer',
-          disabled: settings?.superagent === true || busy !== '',
-          onChange: (value: boolean) => saveDirect({ directBusyMode: value ? 'steer' : 'queue' }),
-          label: t('direct.steer'),
-        }),
-        t('direct.steer'),
-        t('direct.steerHint'),
-      ),
-      fieldRow(
-        t('direct.workspace'),
-        h(MenuSelect, {
-          value: settings?.directWorkspaceId ?? '',
-          options: workspaceOptions(workspaces, settings?.directWorkspaceId ?? '', t),
-          disabled: settings?.superagent === true || workspaces?.available !== true || busy !== '',
-          onChange: (next: string) => {
-            saveDirect({ directWorkspaceId: next });
-            void loadWorkspaces();
-          },
-        }),
-      ),
       h(
         'div',
-        { className: 'lark-card-hint' },
-        workspaces?.available === false
-          ? workspaces.reason ?? t('direct.workspaceUnavailable')
-          : t('direct.workspaceHint'),
-      ),
-    ),
-
-    h(
-      'section',
-      { className: 'lark-card' },
-      h('div', { className: 'lark-card-title' }, t('reminder.title')),
-      h('div', { className: 'lark-card-hint' }, t('reminder.hint')),
-      toggleRow(
-        h(Switch, {
-          checked: settings?.questionReminders === true,
-          disabled: settings?.superagent === true || busy !== '',
-          onChange: (value: boolean) => toggle('questionReminders', value),
-          label: t('reminder.enabled'),
-        }),
-        t('reminder.enabled'),
-        settings?.superagent === true ? t('reminder.coreHint') : t('reminder.enabledHint'),
-      ),
-      fieldRow(
-        t('reminder.delay'),
+        { className: 'lark-card-head' },
         h(
           'div',
-          { className: 'lark-inline-save' },
-          h(Input, {
-            className: 'lark-input lark-input-narrow',
-            value: delay ?? '',
-            inputMode: 'numeric',
-            disabled: settings?.superagent === true || settings?.questionReminders !== true,
-            onChange: (event: any) => setDelay(event.target.value),
-          }),
-          h('span', { className: 'lark-unit' }, t('common.minutes')),
-          h(
-            Button,
-            {
-              variant: 'outline',
-              disabled: busy !== '' || settings?.superagent === true || settings?.questionReminders !== true || !delayValid,
-              onClick: saveDelay,
-            },
-            t('common.save'),
-          ),
+          { className: 'lark-card-heading' },
+          h('div', { className: 'lark-card-title' }, t('direct.title')),
+          directOpen
+            ? null
+            : h('div', { className: 'lark-card-hint' }, coreActive ? t('direct.summaryCore') : t('direct.hint')),
+        ),
+        h(
+          Button,
+          {
+            variant: 'ghost',
+            className: 'lark-disclosure',
+            'aria-expanded': directOpen,
+            'aria-controls': 'lark-direct-body',
+            onClick: () => setDirectExpanded(!directOpen),
+          },
+          directOpen ? t('common.collapse') : t('common.expand'),
+          IconChevronDown === null ? null : h(IconChevronDown, { size: 14 }),
         ),
       ),
-      delayText !== '' && !delayValid
-        ? h('div', { className: 'lark-banner', 'data-tone': 'error' }, t('reminder.delayInvalid'))
-        : null,
-      (snapshot?.reminders.pendingQuestions ?? 0) + (snapshot?.reminders.pendingApprovals ?? 0) > 0
+      directOpen
         ? h(
             'div',
-            { className: 'lark-card-hint' },
-            t('reminder.pending', {
-              questions: snapshot?.reminders.pendingQuestions ?? 0,
-              approvals: snapshot?.reminders.pendingApprovals ?? 0,
-            }),
+            { id: 'lark-direct-body', className: 'lark-card-body' },
+            h('div', { className: 'lark-card-hint' }, t('direct.coreNotice')),
+            h(
+              'div',
+              { className: 'lark-group' },
+              h('div', { className: 'lark-group-title' }, t('direct.groupSession')),
+              toggleRow(
+                h(Switch, {
+                  checked: settings?.directBusyMode === 'steer',
+                  disabled: coreActive || busy !== '',
+                  onChange: (value: boolean) => saveDirect({ directBusyMode: value ? 'steer' : 'queue' }),
+                  label: t('direct.steer'),
+                }),
+                t('direct.steer'),
+                t('direct.steerHint'),
+              ),
+              fieldRow(
+                t('direct.workspace'),
+                h(MenuSelect, {
+                  value: settings?.directWorkspaceId ?? '',
+                  options: workspaceOptions(workspaces, settings?.directWorkspaceId ?? '', t),
+                  disabled: coreActive || workspaces?.available !== true || busy !== '',
+                  onChange: (next: string) => {
+                    saveDirect({ directWorkspaceId: next });
+                    void loadWorkspaces();
+                  },
+                }),
+              ),
+              h(
+                'div',
+                { className: 'lark-card-hint' },
+                workspaces?.available === false
+                  ? workspaces.reason ?? t('direct.workspaceUnavailable')
+                  : t('direct.workspaceHint'),
+              ),
+            ),
+            h(
+              'div',
+              { className: 'lark-group' },
+              h('div', { className: 'lark-group-title' }, t('longTask.title')),
+              h('div', { className: 'lark-card-hint' }, t('longTask.hint')),
+              toggleRow(
+                h(Switch, {
+                  checked: settings?.longTaskReminders === true,
+                  disabled: coreActive || busy !== '',
+                  onChange: (value: boolean) => toggle('longTaskReminders', value),
+                  label: t('longTask.enabled'),
+                }),
+                t('longTask.enabled'),
+                coreActive ? t('reminder.coreHint') : t('longTask.enabledHint'),
+              ),
+              fieldRow(
+                t('longTask.threshold'),
+                h(
+                  'div',
+                  { className: 'lark-inline-save' },
+                  h(Input, {
+                    className: 'lark-input lark-input-narrow',
+                    value: longMinutes ?? '',
+                    inputMode: 'numeric',
+                    disabled: coreActive || settings?.longTaskReminders !== true,
+                    onChange: (event: any) => setLongMinutes(event.target.value),
+                  }),
+                  h('span', { className: 'lark-unit' }, t('common.minutes')),
+                  h(
+                    Button,
+                    {
+                      variant: 'outline',
+                      disabled: busy !== '' || coreActive || settings?.longTaskReminders !== true || !longValid,
+                      onClick: saveLongMinutes,
+                    },
+                    t('common.save'),
+                  ),
+                ),
+              ),
+              longText !== '' && !longValid
+                ? h('div', { className: 'lark-banner', 'data-tone': 'error' }, t('longTask.thresholdInvalid'))
+                : null,
+              toggleRow(
+                h(Switch, {
+                  checked: settings?.failureReminders === true,
+                  disabled: coreActive || busy !== '',
+                  onChange: (value: boolean) => toggle('failureReminders', value),
+                  label: t('longTask.failure'),
+                }),
+                t('longTask.failure'),
+                coreActive ? t('reminder.coreHint') : t('longTask.failureHint'),
+              ),
+            ),
+            h(
+              'div',
+              { className: 'lark-group' },
+              h('div', { className: 'lark-group-title' }, t('reminder.title')),
+              h('div', { className: 'lark-card-hint' }, t('reminder.hint')),
+              toggleRow(
+                h(Switch, {
+                  checked: settings?.questionReminders === true,
+                  disabled: coreActive || busy !== '',
+                  onChange: (value: boolean) => toggle('questionReminders', value),
+                  label: t('reminder.enabled'),
+                }),
+                t('reminder.enabled'),
+                coreActive ? t('reminder.coreHint') : t('reminder.enabledHint'),
+              ),
+              fieldRow(
+                t('reminder.delay'),
+                h(
+                  'div',
+                  { className: 'lark-inline-save' },
+                  h(Input, {
+                    className: 'lark-input lark-input-narrow',
+                    value: delay ?? '',
+                    inputMode: 'numeric',
+                    disabled: coreActive || settings?.questionReminders !== true,
+                    onChange: (event: any) => setDelay(event.target.value),
+                  }),
+                  h('span', { className: 'lark-unit' }, t('common.minutes')),
+                  h(
+                    Button,
+                    {
+                      variant: 'outline',
+                      disabled: busy !== '' || coreActive || settings?.questionReminders !== true || !delayValid,
+                      onClick: saveDelay,
+                    },
+                    t('common.save'),
+                  ),
+                ),
+              ),
+              delayText !== '' && !delayValid
+                ? h('div', { className: 'lark-banner', 'data-tone': 'error' }, t('reminder.delayInvalid'))
+                : null,
+              (snapshot?.reminders.pendingQuestions ?? 0) + (snapshot?.reminders.pendingApprovals ?? 0) > 0
+                ? h(
+                    'div',
+                    { className: 'lark-card-hint' },
+                    t('reminder.pending', {
+                      questions: snapshot?.reminders.pendingQuestions ?? 0,
+                      approvals: snapshot?.reminders.pendingApprovals ?? 0,
+                    }),
+                  )
+                : null,
+              snapshot?.reminders.lastError === undefined
+                ? null
+                : h('div', { className: 'lark-card-hint' }, snapshot.reminders.lastError.message),
+            ),
           )
         : null,
-      snapshot?.reminders.lastError === undefined
-        ? null
-        : h('div', { className: 'lark-card-hint' }, snapshot.reminders.lastError.message),
     ),
   );
 }

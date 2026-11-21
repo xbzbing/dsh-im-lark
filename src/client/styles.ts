@@ -46,7 +46,10 @@ export const STYLES = `
 .lark-disclosure { flex: none; color: var(--dsw-alias-label-secondary); }
 .lark-disclosure svg { transition: transform .15s ease; }
 .lark-disclosure[aria-expanded="true"] svg { transform: rotate(180deg); }
-.lark-credentials-body { display: flex; flex-direction: column; gap: 12px; }
+.lark-card-body { display: flex; flex-direction: column; gap: 12px; }
+.lark-group { display: flex; flex-direction: column; gap: 12px; }
+.lark-group + .lark-group { padding-top: 14px; border-top: 1px solid var(--dsw-alias-border-l1); }
+.lark-group-title { color: var(--dsw-alias-label-secondary); font-size: 12px; font-weight: 600; line-height: 18px; }
 
 .lark-rows { display: flex; flex-direction: column; gap: 8px; }
 .lark-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
