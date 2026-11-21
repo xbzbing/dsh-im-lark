@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { parseMessageEvent, stripMentions } from '../../src/host/inbound.ts';
+import { parseCardAction, parseMessageEvent, stripMentions } from '../../src/host/inbound.ts';
 
 interface MessageInput {
   messageId?: string;
@@ -190,4 +190,62 @@ test('入站：完全不是事件对象也不抛错', () => {
     assert.doesNotThrow(() => parseMessageEvent(raw));
     assert.equal(parseMessageEvent(raw).kind, 'ignored');
   }
+});
+
+/**
+ * 长连接下 SDK 的 `EventDispatcher` 已经把信封拆开，handler 拿到的是事件体本身。
+ * 这里只造事件体，不带 `schema` / `header` / `event` 这三层。
+ */
+function body(input: MessageInput = {}): unknown {
+  const envelope = event(input) as { event: unknown };
+  return envelope.event;
+}
+
+test('入站：长连接的事件体（无信封）与带信封解析结果一致', () => {
+  const wrapped = parseMessageEvent(event({ content: JSON.stringify({ text: '长连接你好' }) }));
+  const unwrapped = parseMessageEvent(body({ content: JSON.stringify({ text: '长连接你好' }) }));
+
+  assert.equal(unwrapped.kind, 'message');
+  if (wrapped.kind !== 'message' || unwrapped.kind !== 'message') return; 
+
+  assert.equal(unwrapped.message.messageId, wrapped.message.messageId);
+  assert.equal(unwrapped.message.chatId, wrapped.message.chatId);
+  assert.equal(unwrapped.message.senderOpenId, wrapped.message.senderOpenId);
+  assert.equal(unwrapped.message.createTime, wrapped.message.createTime);
+  assert.equal(unwrapped.body.text, wrapped.body.text);
+  assert.deepEqual(unwrapped.body.images, wrapped.body.images);
+});
+
+test('入站：长连接的事件体也按引用回复与群聊 @ 规则处理', () => {
+  const quoted = parseMessageEvent(body({ parentId: 'om_parent' }));
+  assert.equal(quoted.kind, 'message');
+  if (quoted.kind === 'message') assert.equal(quoted.message.parentId, 'om_parent');
+
+  const group = parseMessageEvent(body({ chatType: 'group', mentions: [] }));
+  assert.equal(group.kind, 'ignored');
+  if (group.kind === 'ignored') assert.match(group.reason, /@机器人/);
+});
+
+test('入站：卡片回调两种形状都能解析出消息与会话', () => {
+  const inner = {
+    operator: { open_id: 'ou_user' },
+    action: { value: { answer: 'a' }, tag: 'button' },
+    context: { open_message_id: 'om_card', open_chat_id: 'oc_1' },
+  };
+
+  const wrapped = parseCardAction({ schema: '2.0', header: { event_id: 'ev_card' }, event: inner });
+  const unwrapped = parseCardAction(inner);
+
+  assert.equal(wrapped?.messageId, 'om_card');
+  assert.equal(wrapped?.chatId, 'oc_1');
+  assert.equal(wrapped?.eventId, 'ev_card');
+  assert.equal(unwrapped?.messageId, 'om_card');
+  assert.equal(unwrapped?.chatId, 'oc_1');
+  assert.equal(unwrapped?.operatorOpenId, 'ou_user');
+  assert.deepEqual(unwrapped?.value, { answer: 'a' });
+});
+
+test('入站：卡片回调解不开时返回 null，不抛异常', () => {
+  assert.equal(parseCardAction(null), null);
+  assert.equal(parseCardAction({ action: {} }), null);
 });

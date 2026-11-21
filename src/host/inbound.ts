@@ -64,13 +64,32 @@ interface RawEvent {
 }
 
 /**
+ * 把两种投递形状收敛成同一个信封。
+ *
+ * 飞书有两条投递路径，形状不一样：
+ *
+ * - webhook：`{ schema, header, event }`，事件体在 `event` 里；
+ * - 长连接：SDK 的 `EventDispatcher` 已经把信封拆开，handler 拿到的**就是事件体**
+ *   （`{ sender, message }` / `{ operator, action, context }`）。
+ *
+ * 只认其中一种就会出现「事件到了但被判成格式不对」——症状是收到消息却毫无反应。
+ * 这里两种都收下：有 `event` 就取里面，没有就当成事件体本身。
+ */
+function splitEnvelope(raw: unknown): RawEvent | null {
+  const record = asRecord(raw);
+  if (record === null) return null;
+  if (asRecord(record.event) !== null) return record as RawEvent;
+  return { event: record as RawEvent['event'] } as RawEvent;
+}
+
+/**
  * 解析 `im.message.receive_v1` 事件。
  *
  * 返回值只有两种：可处理的消息，或一条带原因的忽略。忽略的原因会进日志，便于
  * 排查「为什么机器人没反应」。
  */
 export function parseMessageEvent(raw: unknown, options: ParseOptions = {}): InboundParse {
-  const envelope = asRecord(raw) as RawEvent | null;
+  const envelope = splitEnvelope(raw);
   const event = asRecord(envelope?.event);
   if (event === null) return { kind: 'ignored', reason: '事件缺少 event 字段' };
 
@@ -341,7 +360,7 @@ function toMillis(value: unknown): number {
  * （是否已作答、是否过期）在 `bridge.applyCardAction` 里做。
  */
 export function parseCardAction(raw: unknown): LarkCardAction | null {
-  const envelope = asRecord(raw);
+  const envelope = splitEnvelope(raw);
   const event = asRecord(envelope?.event);
   if (event === null) return null;
 
