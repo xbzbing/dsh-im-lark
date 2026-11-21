@@ -10,7 +10,7 @@
 
 1. **`apply()` 不得返回普通对象**（Cordis 会当成 effect，报 `Invalid effect`）。可以是 `async`，但先登记 `ctx.effect` 清理，再 `await` 异步初始化；启动失败只记日志，不把插件带崩。
 2. **不引新依赖**。唯一允许的运行时依赖是 `@larksuiteoapi/node-sdk`（`scripts/verify-package.mjs` 会拦）。要加依赖先改白名单并在 ADR 里写理由。
-3. **不 import `dsh-my-superagent` 的类型**。桥接协议用本仓库 `src/host/bridge/` 里的最小结构类型描述；`dsh-my-superagent` 只作为 devDependency 出现在一致性测试里。
+3. **不依赖 `dsh-my-superagent` 的包与类型**（devDependency 也不行）。桥接协议用本仓库 `src/host/protocol.ts` 的最小结构类型描述；一致性契约在 `test/unit/bridge.test.ts` 里本地自测。
 4. **不在日志、面板快照、错误信息里出现 App Secret 或完整 App ID**。只允许 App ID 尾号六位。
 5. **不整篇重写别人的文件**。改动用定向编辑；`tsc` 报错先看错误码，不要靠猜。
 6. **不把 SDK 类型泄漏到 `lark/` 之外**。`@larksuiteoapi/node-sdk` 只在 `src/host/lark/sdk.ts` 里出现，其余文件面向 `lark/api.ts`、`lark/connection.ts` 的端口。
@@ -61,6 +61,15 @@ npm run typecheck && npm test && npm run build && npm run verify
 ```
 
 涉及真实平台行为（卡片渲染、上传、频控、撤回窗口）的改动，在 `docs/review/` 留一份测试记录（该目录不入库），写清应用、租户、时间、实际现象。没有真机验证的能力不要写进 README 的「能力」小节。
+
+门禁自包含：不依赖私有核心，公开 CI 跑的就是全量。
+
+## 发布
+
+- 发布只走 `.github/workflows/release.yml`（main 上 `package.json` 变更触发），不手工打 tag、不本地 `npm publish`（首次 bootstrap 见 ADR-0007）
+- 版本三处同步：`package.json`、`package-lock.json`、`src/shared/version.ts`；正文写 `docs/releases/v<版本>.md`，稳定版与预发布都要有
+- 预发布发 npm 频道标签（`stage` / `rc`），`latest` 只给正式版
+- 发布正文是中英双语，格式见 `.github/RELEASE_TEMPLATE.md`
 
 ## 提交
 
