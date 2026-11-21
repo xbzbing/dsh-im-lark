@@ -102,5 +102,9 @@
   "longTask.threshold": "Long-task threshold",
   "longTask.thresholdInvalid": "The threshold must be a whole number of minutes between 1 and 1440.",
   "longTask.failure": "Failure reminder",
-  "longTask.failureHint": "Notify immediately when a turn fails or is aborted externally, regardless of duration. A stop you pressed yourself does not count."
+  "longTask.failureHint": "Notify immediately when a turn fails or is aborted externally, regardless of duration. A stop you pressed yourself does not count.",
+  "meta": {
+    "title": "Feishu bot",
+    "description": "IM bridge that connects Feishu (Lark) to DeepSeek Harness"
+  }
 }

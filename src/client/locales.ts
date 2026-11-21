@@ -11,13 +11,20 @@ import zhPack from '../../locale/zh.json' with { type: 'json' };
 
 export const NS = 'dsh-im-lark';
 
+/** `meta` 供宿主做插件展示名与简介；面板文案只取其余键。 */
+function panelPack<T extends Record<string, unknown>>(pack: T): Omit<T, 'meta'> {
+  const text = { ...pack } as Record<string, unknown>;
+  delete text.meta;
+  return text as Omit<T, 'meta'>;
+}
+
 /** 中文语言包：键集合的唯一来源。 */
-export const zh = zhPack;
+export const zh = panelPack(zhPack);
 
 export type LarkKey = keyof typeof zh;
 
 /** 英文语言包：类型约束保证与中文同键。 */
-export const en: Record<LarkKey, string> = enPack;
+export const en: Record<LarkKey, string> = panelPack(enPack);
 
 export type TranslateParams = Record<string, string | number>;
 

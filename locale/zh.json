@@ -102,5 +102,9 @@
   "longTask.threshold": "长任务阈值",
   "longTask.thresholdInvalid": "阈值必须是 1–1440 的整数分钟。",
   "longTask.failure": "失败提醒",
-  "longTask.failureHint": "回合失败或被外部中止时立刻提醒，不看耗时。自己按的停止不算失败。"
+  "longTask.failureHint": "回合失败或被外部中止时立刻提醒，不看耗时。自己按的停止不算失败。",
+  "meta": {
+    "title": "飞书机器人",
+    "description": "把飞书（Lark）接入 DeepSeek Harness 的 IM 桥插件"
+  }
 }
