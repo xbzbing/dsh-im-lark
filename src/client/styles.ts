@@ -42,6 +42,11 @@ export const STYLES = `
 .lark-card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .lark-card-title { font-weight: 600; font-size: 13px; }
 .lark-card-hint { color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 18px; }
+.lark-card-heading { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.lark-disclosure { flex: none; color: var(--dsw-alias-label-secondary); }
+.lark-disclosure svg { transition: transform .15s ease; }
+.lark-disclosure[aria-expanded="true"] svg { transform: rotate(180deg); }
+.lark-credentials-body { display: flex; flex-direction: column; gap: 12px; }
 
 .lark-rows { display: flex; flex-direction: column; gap: 8px; }
 .lark-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }

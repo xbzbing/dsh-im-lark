@@ -79,6 +79,8 @@ export function LarkSettingsPanel(props: any) {
   const [registerOpen, setRegisterOpen] = useState(false);
   /** 清除凭据的确认框：原生 confirm 是系统外观，和面板主题不一致。 */
   const [clearOpen, setClearOpen] = useState(false);
+  /** 凭据卡片是否展开：null 跟随「是否已配置」自动决定，用户点过就以手动为准。 */
+  const [credentialsExpanded, setCredentialsExpanded] = useState<boolean | null>(null);
   /** 对话框是否还开着：发起授权是异步的，关掉之后回来的结果要自己取消。 */
   const registerOpenRef = useRef(false);
   const [workspaces, setWorkspaces] = useState<WorkspaceCatalog | null>(null);
@@ -135,7 +137,7 @@ export function LarkSettingsPanel(props: any) {
     setLongMinutes((current) => current ?? String(longValue));
   }, [longValue]);
 
-  const run = async (name: string, work: () => Promise<Snapshot | void>, success?: string) => {
+  const run = async (name: string, work: () => Promise<Snapshot | void>, success?: string): Promise<boolean> => {
     setBusy(name);
     setError('');
     setNotice('');
@@ -143,8 +145,10 @@ export function LarkSettingsPanel(props: any) {
       const result = await work();
       if (result !== undefined) applySnapshot(result);
       if (success !== undefined) setNotice(success);
+      return true;
     } catch (cause) {
       setError(errorText(t, cause));
+      return false;
     } finally {
       setBusy('');
     }
@@ -278,7 +282,10 @@ export function LarkSettingsPanel(props: any) {
           domain,
         }),
       t('credentials.saved'),
-    ).then(() => setAppSecret(''));
+    ).then((ok) => {
+      setAppSecret('');
+      if (ok) setCredentialsExpanded(null);
+    });
   };
 
   const probe = () => {
@@ -308,7 +315,9 @@ export function LarkSettingsPanel(props: any) {
 
   const confirmClearCredentials = () => {
     setClearOpen(false);
-    void run('clear', async () => rpcCall<Snapshot>(ENDPOINTS.clearCredentials), t('credentials.cleared'));
+    void run('clear', async () => rpcCall<Snapshot>(ENDPOINTS.clearCredentials), t('credentials.cleared')).then((ok) => {
+      if (ok) setCredentialsExpanded(null);
+    });
   };
 
   if (loading) {
@@ -325,6 +334,8 @@ export function LarkSettingsPanel(props: any) {
   const domainLabel = (snapshot?.config.domain ?? 'feishu') === 'lark' ? t('credentials.domainLark') : t('credentials.domainFeishu');
   const busySave =
     busy === 'credentials' || busy === 'probe' || busy === 'clear' || busy === 'register' || busy === 'register-cancel';
+  const credentialsConfigured = status !== undefined && status.appIdTail !== null;
+  const credentialsOpen = credentialsExpanded ?? !credentialsConfigured;
 
   return h(
     'div',
@@ -398,8 +409,30 @@ export function LarkSettingsPanel(props: any) {
     h(
       'section',
       { className: 'lark-card' },
-      h('div', { className: 'lark-card-title' }, t('credentials.title')),
-      h('div', { className: 'lark-card-hint' }, t('credentials.hint')),
+      h(
+        'div',
+        { className: 'lark-card-head' },
+        h(
+          'div',
+          { className: 'lark-card-heading' },
+          h('div', { className: 'lark-card-title' }, t('credentials.title')),
+          !credentialsOpen && credentialsConfigured
+            ? h('div', { className: 'lark-card-hint' }, t('credentials.configured', { appId: status?.appIdTail ?? '', domain: domainLabel }))
+            : null,
+        ),
+        h(
+          Button,
+          {
+            variant: 'ghost',
+            className: 'lark-disclosure',
+            'aria-expanded': credentialsOpen,
+            'aria-controls': 'lark-credentials-body',
+            onClick: () => setCredentialsExpanded(!credentialsOpen),
+          },
+          credentialsOpen ? t('credentials.collapse') : t('credentials.expand'),
+          IconChevronDown === null ? null : h(IconChevronDown, { size: 14 }),
+        ),
+      ),
       h(RegisterDialog, {
         open: registerOpen,
         registration,
@@ -419,49 +452,56 @@ export function LarkSettingsPanel(props: any) {
         onCancel: () => setClearOpen(false),
         onConfirm: confirmClearCredentials,
       }),
-      h(
-        'div',
-        { className: 'lark-credentials' },
-        h(
-          'div',
-          { className: 'lark-credentials-main' },
-          h('div', { className: 'lark-credentials-label' }, t('credentials.manual')),
-          fieldRow(
-            t('credentials.appId'),
-            h(Input, {
-              className: 'lark-input',
-              value: appId,
-              placeholder: 'cli_…',
-              spellCheck: false,
-              autoComplete: 'off',
-              onChange: (event: any) => setAppId(event.target.value),
-            }),
-          ),
-          fieldRow(
-            t('credentials.appSecret'),
-            h(Input, {
-              className: 'lark-input',
-              type: 'password',
-              value: appSecret,
-              placeholder: snapshot?.status.appIdTail === null ? '' : t('credentials.appSecretPlaceholder'),
-              autoComplete: 'new-password',
-              onChange: (event: any) => setAppSecret(event.target.value),
-            }),
-          ),
-          fieldRow(
-            t('credentials.domain'),
-            h(PlatformSelect, { value: domain, onChange: (next: string) => setDomain(next), t }),
-          ),
-          h(
+      credentialsOpen
+        ? h(
             'div',
-            { className: 'lark-actions' },
-            h(Button, { variant: 'primary', disabled: busySave, onClick: saveCredentials }, busy === 'credentials' ? t('credentials.saving') : t('credentials.save')),
-            h(Button, { variant: 'outline', disabled: busySave, onClick: probe }, busy === 'probe' ? t('credentials.probing') : t('credentials.probe')),
-            h(Button, { variant: 'outline', className: 'lark-danger', disabled: busySave || status?.appIdTail === null, onClick: clearCredentials }, t('credentials.clear')),
-          ),
-        ),
-        h(RegisterEntry, { busy, t, onOpen: startRegistration }),
-      ),
+            { id: 'lark-credentials-body', className: 'lark-credentials-body' },
+            h('div', { className: 'lark-card-hint' }, t('credentials.hint')),
+            h(
+              'div',
+              { className: 'lark-credentials' },
+              h(
+                'div',
+                { className: 'lark-credentials-main' },
+                h('div', { className: 'lark-credentials-label' }, t('credentials.manual')),
+                fieldRow(
+                  t('credentials.appId'),
+                  h(Input, {
+                    className: 'lark-input',
+                    value: appId,
+                    placeholder: 'cli_…',
+                    spellCheck: false,
+                    autoComplete: 'off',
+                    onChange: (event: any) => setAppId(event.target.value),
+                  }),
+                ),
+                fieldRow(
+                  t('credentials.appSecret'),
+                  h(Input, {
+                    className: 'lark-input',
+                    type: 'password',
+                    value: appSecret,
+                    placeholder: snapshot?.status.appIdTail === null ? '' : t('credentials.appSecretPlaceholder'),
+                    autoComplete: 'new-password',
+                    onChange: (event: any) => setAppSecret(event.target.value),
+                  }),
+                ),
+                fieldRow(
+                  t('credentials.domain'),
+                  h(PlatformSelect, { value: domain, onChange: (next: string) => setDomain(next), t }),
+                ),
+                h(
+                  'div',
+                  { className: 'lark-actions' },
+                  h(Button, { variant: 'primary', disabled: busySave, onClick: saveCredentials }, busy === 'credentials' ? t('credentials.saving') : t('credentials.save')),
+                  h(Button, { variant: 'outline', disabled: busySave, onClick: probe }, busy === 'probe' ? t('credentials.probing') : t('credentials.probe')),
+                  h(Button, { variant: 'outline', className: 'lark-danger', disabled: busySave || status?.appIdTail === null, onClick: clearCredentials }, t('credentials.clear')),
+                ),
+              ),
+              h(RegisterEntry, { busy, t, onOpen: startRegistration }),
+            ),
+          )
+        : null,
     ),
 
     h(
