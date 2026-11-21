@@ -32,10 +32,10 @@ test('清单：运行时依赖只有官方 SDK 且钉死版本', async () => {
   assert.match(version, /^\d+\.\d+\.\d+$/);
 });
 
-test('清单：核心包只在 devDependencies（一致性测试用）', async () => {
+test('清单：不依赖私有核心（测试自包含）', async () => {
   const pkg = await manifest();
   assert.equal(pkg.dependencies['dsh-my-superagent'], undefined);
-  assert.equal(typeof pkg.devDependencies?.['dsh-my-superagent'], 'string');
+  assert.equal(pkg.devDependencies?.['dsh-my-superagent'], undefined);
 });
 
 test('清单：peer 依赖只允许 @deepseek-ai/* 且可选', async () => {

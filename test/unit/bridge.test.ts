@@ -1,12 +1,16 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { runBridgeConformance } from 'dsh-my-superagent/protocol/conformance';
-import type { ConformanceHarness, NativeOperation } from 'dsh-my-superagent/protocol/conformance';
-
 import { createLarkBridge } from '../../src/host/bridge.ts';
 import type { LarkApi } from '../../src/host/lark/api.ts';
 import type { BridgeHandle, BridgeProvider, Delivery, InteractionAnswerDraft, OwnerMessageDraft } from '../../src/host/protocol.ts';
+
+/** 桥对平台发出的操作：契约用例据此判断「有没有真的再发一次」。 */
+interface NativeOperation {
+  kind: 'send' | 'edit';
+  deliveryId: string;
+  streamId?: string;
+}
 
 interface Fixture {
   provider: BridgeProvider;
@@ -147,11 +151,36 @@ const DELIVERY: Delivery = {
   body: '这是正文',
 };
 
-test('桥：能力声明能被核心的 Schema 接受', () => {
+test('桥：能力声明是合法形状', () => {
   const { provider } = fixture();
+  const caps = provider.capabilities;
+
+  // 身份与协议：原核心 Schema 的本地等价物（核心仓库仍是权威定义）。
   assert.equal(provider.platform, 'lark');
+  assert.match(provider.platform, /^[a-z][a-z0-9-]{0,31}$/);
   assert.match(provider.account, /^[\w.@-]{1,128}$/);
-  assert.equal(provider.health().state, 'ok');
+  assert.ok(provider.protocol.includes('my-superagent/v1'));
+  assert.ok(['ok', 'degraded', 'down'].includes(provider.health().state));
+
+  assert.equal(typeof caps.detail, 'boolean');
+  assert.equal(typeof caps.nativeCommands, 'boolean');
+  assert.ok(['none', 'basic', 'full'].includes(caps.markdown));
+  assert.ok(Number.isInteger(caps.maxText.max) && caps.maxText.max > 0);
+  assert.ok(['char', 'utf8-byte'].includes(caps.maxText.unit));
+  assert.equal(typeof caps.outbound.requiresPriorInbound, 'boolean');
+
+  if (caps.interaction !== undefined) {
+    assert.equal(typeof caps.interaction.choice, 'boolean');
+    assert.equal(typeof caps.interaction.multiChoice, 'boolean');
+    assert.equal(typeof caps.interaction.freeText, 'boolean');
+    assert.ok(Number.isInteger(caps.interaction.maxOptions) && caps.interaction.maxOptions > 0);
+    assert.ok(Number.isInteger(caps.interaction.maxQuestions) && caps.interaction.maxQuestions > 0);
+    assert.ok(['any', 'immediate', 'none'].includes(caps.interaction.updateAfterAnswer));
+  }
+  if (caps.edit !== undefined) {
+    assert.ok(['any', 'reply'].includes(caps.edit.scope));
+    assert.ok(caps.edit.minIntervalMs >= 0);
+  }
 });
 
 test('桥：交付成功时回执带平台消息 id 与条数', async () => {
@@ -376,17 +405,37 @@ test('桥：已销毁的桥拒绝交付', async () => {
   assert.equal(receipt.errorCode, 'other');
 });
 
-/* --------------------------------------------------------- 一致性测试（核心提供） */
+/* ---------------------------------------------------------- 协议契约（本地自测） */
 
-runBridgeConformance('飞书桥', {
-  recipient: 'oc_conformance',
-  create: () => {
-    const { provider, operations, bridge } = fixture();
-    return {
-      // 核心类型与本仓库的最小结构类型是两份声明，形状一致；在测试边界桥接一次。
-      provider: provider as unknown as ConformanceHarness['provider'],
-      operations: () => operations(),
-      dispose: () => bridge.dispose(),
-    };
-  },
+/**
+ * 这套以前调用私有核心导出的 `runBridgeConformance`（devDependency 指向
+ * `file:../dsh-my-superagent`）。公开仓库不该为测试拉一个私有包，所以把核心那套
+ * 契约里与本仓库相关、且原有用例没覆盖的部分在本地重写：
+ *
+ * - 身份与能力形状：见上面「能力声明是合法形状」；
+ * - 迟到修订不回退、卡片超限只分条一次：见上面两条流式用例；
+ * - 这里补「同一交付 id 只发一次」与「超长正文分条送达」。
+ *
+ * 权威 Schema 仍在核心仓库；形状变了由 `src/host/protocol.ts` 的边界类型先报错。
+ */
+test('契约：同一交付 id 只发一次', async () => {
+  const { provider, operations } = fixture();
+  const first = await provider.deliver({ ...DELIVERY, id: 'dlv_contract_once' });
+  const before = operations().length;
+  const again = await provider.deliver({ ...DELIVERY, id: 'dlv_contract_once' });
+
+  assert.equal(first.status, 'sent');
+  assert.equal(again.status, 'sent');
+  assert.equal(operations().length, before, '同 id 重投不应产生新的平台操作');
+  assert.equal(again.bridgeMessageId, first.bridgeMessageId);
+});
+
+test('契约：超长正文照样送达', async () => {
+  const { provider } = fixture();
+  const max = provider.capabilities.maxText.max;
+  const receipt = await provider.deliver({ ...DELIVERY, id: 'dlv_contract_long', body: '长'.repeat(max + 100) });
+
+  // 卡片能装下就一张卡发完（平台限制按卡片体积算，不是 maxText）；装不下走文本分条。
+  assert.equal(receipt.status, 'sent');
+  assert.ok((receipt.messagesSent ?? 0) >= 1);
 });

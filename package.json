@@ -89,8 +89,7 @@
     "@types/node": "24.19.2",
     "@types/react": "18.3.31",
     "esbuild": "0.28.2",
-    "typescript": "5.9.3",
-    "dsh-my-superagent": "file:../dsh-my-superagent"
+    "typescript": "5.9.3"
   },
   "bin": {
     "dsh-lark-send": "./bin/dsh-lark-send.mjs"

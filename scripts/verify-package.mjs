@@ -105,7 +105,7 @@ const pinned = manifest.dependencies?.['@larksuiteoapi/node-sdk'];
 if (typeof pinned !== 'string' || pinned === '' || /^[\^~]/.test(pinned)) {
   fail('dependencies["@larksuiteoapi/node-sdk"] 必须钉死具体版本（SDK 升级单独提交）');
 }
-const DEV_ALLOWLIST = new Set(['typescript', 'esbuild', '@types/node', '@types/react', 'dsh-my-superagent']);
+const DEV_ALLOWLIST = new Set(['typescript', 'esbuild', '@types/node', '@types/react']);
 for (const name of Object.keys(manifest.devDependencies ?? {})) {
   if (!DEV_ALLOWLIST.has(name)) fail(`devDependencies 不在白名单：${name}`);
 }
