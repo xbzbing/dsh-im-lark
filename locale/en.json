@@ -104,7 +104,7 @@
   "longTask.failure": "Failure reminder",
   "longTask.failureHint": "Notify immediately when a turn fails or is aborted externally, regardless of duration. A stop you pressed yourself does not count.",
   "meta": {
-    "title": "Feishu bot",
+    "title": "Lark Bot",
     "description": "IM bridge that connects Feishu (Lark) to DeepSeek Harness"
   }
 }
