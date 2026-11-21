@@ -555,8 +555,8 @@ function noProvider(): Error {
 /** 从渲染出的卡片里取回提醒 id：单选在按钮 value，多选在下拉 value。 */
 function reminderOf(card: Record<string, any>): string {
   const element = card.body.elements[1] as Record<string, any>;
-  const value = element.tag === 'multi_select_static'
-    ? element.behaviors[0].value
+  const value = element.tag === 'form'
+    ? element.elements[1].behaviors[0].value
     : element.columns[0].elements[0].behaviors[0].value;
   return value.r as string;
 }
@@ -629,7 +629,10 @@ test('问题提醒：多选卡的回调带回多项', async () => {
   await tick();
 
   const reminderId = reminderOf(cards[0]!);
-  assert.equal(broker.applyCardAction({ value: { r: reminderId, q: 'q1' }, option: ['0', '2'] }), true);
+  assert.equal(
+    broker.applyCardAction({ value: { r: reminderId, q: 'q1' }, formValues: { answer: ['0', '2'] } }),
+    true,
+  );
   assert.deepEqual(await pending, { answers: [{ id: 'q1', selected: ['甲', '丙'] }] });
 });
 

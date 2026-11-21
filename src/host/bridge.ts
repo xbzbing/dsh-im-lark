@@ -278,7 +278,7 @@ export function createLarkBridge(deps: BridgeDeps): LarkBridge {
   }
 
   async function applyCardAction(action: LarkCardAction): Promise<AcceptResult> {
-    const result = answerFromAction(action.value, action.option, action.operatorOpenId, interactions, now());
+    const result = answerFromAction(action.value, action.option, action.formValues, action.operatorOpenId, interactions, now());
     if ('reason' in result) return { accepted: false, reason: result.reason, ...(result.detail === undefined ? {} : { detail: result.detail }) };
 
     const accepted = await answer(result);

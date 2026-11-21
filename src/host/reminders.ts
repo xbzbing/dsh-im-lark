@@ -170,7 +170,11 @@ export class ReminderCenter {
   }
 
   /** 卡片回调：只可能是提问卡；返回 true 表示这条回调已被消化。 */
-  applyCardAction(action: { value: Record<string, unknown>; option?: unknown }): boolean {
+  applyCardAction(action: {
+    value: Record<string, unknown>;
+    option?: unknown;
+    formValues?: Record<string, unknown>;
+  }): boolean {
     return this.#questions.applyCardAction(action);
   }
 

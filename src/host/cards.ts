@@ -155,14 +155,34 @@ function renderQuestion(deliveryId: string, question: InteractionQuestion): unkn
   if (options.length === 0) return elements;
 
   if (question.multiSelect === true) {
+    // 飞书的下拉多选只能嵌在表单容器里，且必须有一个 form_action_type=submit 的
+    // 提交按钮：选中值走回调的 `form_value.answer`，不是下拉自身的 behaviors。
+    // 没有提交按钮时，用户勾完没有任何东西可点（真机踩过）。
     elements.push({
-      tag: 'multi_select_static',
-      placeholder: { tag: 'plain_text', content: '可多选，选完提交' },
-      options: options.map((option, index) => ({
-        text: { tag: 'plain_text', content: option.label },
-        value: String(index),
-      })),
-      behaviors: [{ type: 'callback', value: { d: deliveryId, q: question.id } }],
+      tag: 'form',
+      name: 'ask_form',
+      elements: [
+        {
+          tag: 'multi_select_static',
+          name: 'answer',
+          type: 'default',
+          width: 'fill',
+          required: true,
+          placeholder: { tag: 'plain_text', content: '可多选，选完提交' },
+          options: options.map((option, index) => ({
+            text: { tag: 'plain_text', content: option.label },
+            value: String(index),
+          })),
+        },
+        {
+          tag: 'button',
+          name: 'ask_submit',
+          type: 'primary',
+          text: { tag: 'plain_text', content: '提交' },
+          form_action_type: 'submit',
+          behaviors: [{ type: 'callback', value: { d: deliveryId, q: question.id } }],
+        },
+      ],
     });
     return elements;
   }
@@ -278,6 +298,7 @@ export class InteractionStore {
 export function answerFromAction(
   value: Record<string, unknown>,
   option: unknown,
+  formValues: Record<string, unknown> | undefined,
   sender: string,
   store: InteractionStore,
   now: number,
@@ -295,7 +316,7 @@ export function answerFromAction(
   if (question === undefined) return { reason: 'invalid', detail: '问题不在这次交付里' };
   if (question.intent === 'approval') return { reason: 'not-allowed', detail: '审批请在 Web 端处理' };
 
-  const selected = resolveSelection(question, value, option);
+  const selected = resolveSelection(question, value, option, formValues);
   if (selected === undefined) return { reason: 'invalid-answer', detail: '无法从回调里认出选项' };
 
   return {
@@ -307,7 +328,12 @@ export function answerFromAction(
 }
 
 /** 把按钮 index / 多选值还原成选项文案。 */
-function resolveSelection(question: InteractionQuestion, value: Record<string, unknown>, option: unknown): string[] | undefined {
+function resolveSelection(
+  question: InteractionQuestion,
+  value: Record<string, unknown>,
+  option: unknown,
+  formValues: Record<string, unknown> | undefined,
+): string[] | undefined {
   const options = question.options ?? [];
   const fromIndices = (raw: unknown): string[] | undefined => {
     const indices = toIndexList(raw);
@@ -318,6 +344,13 @@ function resolveSelection(question: InteractionQuestion, value: Record<string, u
 
   if (typeof value.o === 'number') return fromIndices([value.o]);
   if (typeof value.o === 'string') return fromIndices([value.o]);
+
+  // 表单提交：多选的值在 `form_value.answer`（组件 name），不在 behaviors 里。
+  const fromForm = formValues?.answer;
+  if (fromForm !== undefined) {
+    const labels = fromIndices(fromForm);
+    if (labels !== undefined) return labels;
+  }
 
   // 多选：数组优先；字符串可能是 "0,2"、"0%2C2" 或单个值。
   const multi = fromIndices(option);

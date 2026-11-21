@@ -43,14 +43,33 @@ export function renderReminderCard(input: ReminderCardInput): Card {
   const options = question.options ?? [];
 
   if (question.multiSelect === true) {
+    // 下拉多选只能嵌在表单容器里，必须有 form_action_type=submit 的按钮；
+    // 选中值走回调的 `form_value.answer`，没有提交按钮时勾完无处可点。
     elements.push({
-      tag: 'multi_select_static',
-      placeholder: { tag: 'plain_text', content: '可多选，选完提交' },
-      options: options.map((option, index) => ({
-        text: { tag: 'plain_text', content: option.label },
-        value: String(index),
-      })),
-      behaviors: [{ type: 'callback', value: { r: reminderId, q: question.id } }],
+      tag: 'form',
+      name: 'ask_form',
+      elements: [
+        {
+          tag: 'multi_select_static',
+          name: 'answer',
+          type: 'default',
+          width: 'fill',
+          required: true,
+          placeholder: { tag: 'plain_text', content: '可多选，选完提交' },
+          options: options.map((option, index) => ({
+            text: { tag: 'plain_text', content: option.label },
+            value: String(index),
+          })),
+        },
+        {
+          tag: 'button',
+          name: 'ask_submit',
+          type: 'primary',
+          text: { tag: 'plain_text', content: '提交' },
+          form_action_type: 'submit',
+          behaviors: [{ type: 'callback', value: { r: reminderId, q: question.id } }],
+        },
+      ],
     });
   } else {
     elements.push({
@@ -113,6 +132,7 @@ export function answerFromCard(
   question: AskQuestion,
   value: Record<string, unknown>,
   option: unknown,
+  formValues?: Record<string, unknown>,
 ): { id: string; selected: string[] } | null {
   const options = question.options ?? [];
   const labelsOf = (raw: unknown): string[] | undefined => {
@@ -129,7 +149,8 @@ export function answerFromCard(
     return single === undefined ? null : { id: question.id, selected: single };
   }
 
-  const multi = labelsOf(option);
+  // 表单提交：多选值在 `form_value.answer`（组件 name），优先于旧版 option。
+  const multi = labelsOf(formValues?.answer) ?? labelsOf(option);
   if (multi !== undefined) return { id: question.id, selected: multi };
 
   // 有些客户端直接把选项文案回传，认文案兜底。

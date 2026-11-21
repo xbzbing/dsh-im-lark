@@ -312,7 +312,11 @@ export class QuestionBroker {
    * 认不出（不是本插件发的卡片、提醒已失效）返回 false，交给核心桥按「未知交付」
    * 处理——这样独立模式与核心模式的卡片回调走同一条入口。
    */
-  applyCardAction(action: { value: Record<string, unknown>; option?: unknown }): boolean {
+  applyCardAction(action: {
+    value: Record<string, unknown>;
+    option?: unknown;
+    formValues?: Record<string, unknown>;
+  }): boolean {
     const reminderId = typeof action.value.r === 'string' ? action.value.r : '';
     if (reminderId === '') return false;
     const pending = this.#pending.newestFirst().find((item) => item.id === reminderId);
@@ -320,7 +324,7 @@ export class QuestionBroker {
     const questionId = typeof action.value.q === 'string' ? action.value.q : '';
     const question = pending.questions.find((item) => item.id === questionId);
     if (question === undefined) return false;
-    const answer = answerFromCard(question, action.value, action.option);
+    const answer = answerFromCard(question, action.value, action.option, action.formValues);
     if (answer === null) return false;
     pending.resolve({ answers: [answer] });
     this.#pending.delete(pending.id);

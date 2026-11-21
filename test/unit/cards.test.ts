@@ -87,13 +87,27 @@ test('交付卡：多选用 multi_select_static，值用序号避免文案里的
     { interactive: true },
   ) as unknown as CardShape;
 
-  const select = card.body.elements.find((element) => element.tag === 'multi_select_static') as
-    | { options: Array<{ value: string; text: { content: string } }>; behaviors: Array<{ value: Record<string, unknown> }> }
+  const form = card.body.elements.find((element) => element.tag === 'form') as
+    | { name: string; elements: Array<Record<string, any>> }
+    | undefined;
+  assert.ok(form !== undefined);
+  assert.equal(form.name, 'ask_form');
+
+  const select = form.elements.find((element) => element.tag === 'multi_select_static') as
+    | { name: string; options: Array<{ value: string; text: { content: string } }> }
     | undefined;
   assert.ok(select !== undefined);
+  assert.equal(select.name, 'answer');
   assert.deepEqual(select.options.map((option) => option.value), ['0', '1']);
   assert.equal(select.options[0]!.text.content, '甲,乙');
-  assert.deepEqual(select.behaviors[0]!.value, { d: 'dlv_1', q: 'q2' });
+
+  // 没有提交按钮时勾完无处可点：按钮必须带 form_action_type=submit 并携带交付/问题 id。
+  const submit = form.elements.find((element) => element.tag === 'button') as
+    | { form_action_type: string; behaviors: Array<{ value: Record<string, unknown> }> }
+    | undefined;
+  assert.ok(submit !== undefined);
+  assert.equal(submit.form_action_type, 'submit');
+  assert.deepEqual(submit.behaviors[0]!.value, { d: 'dlv_1', q: 'q2' });
 });
 
 test('交付卡：审批类不给按钮，只提示去 Web 端', () => {
@@ -172,7 +186,7 @@ const CHOICE: InteractionQuestion = { id: 'q1', question: '选一个', options: 
 
 test('作答：按钮回传序号 → 选项文案', () => {
   const store = storeWith(CHOICE);
-  const result = answerFromAction({ d: 'dlv_1', q: 'q1', o: 1 }, undefined, 'ou_owner', store, 10);
+  const result = answerFromAction({ d: 'dlv_1', q: 'q1', o: 1 }, undefined, undefined, 'ou_owner', store, 10);
   assert.ok(!('reason' in result));
   assert.deepEqual(result.answers, [{ id: 'q1', selected: ['乙'] }]);
   assert.equal(result.sender, 'ou_owner');
@@ -183,15 +197,23 @@ test('作答：多选接受数组、逗号串与单值', () => {
 
   for (const option of [['0', '1'], '0,1', [0, 1]]) {
     const store = storeWith(multi);
-    const result = answerFromAction({ d: 'dlv_1', q: 'q2' }, option, 'ou', store, 0);
+    const result = answerFromAction({ d: 'dlv_1', q: 'q2' }, option, undefined, 'ou', store, 0);
     assert.ok(!('reason' in result), `option=${JSON.stringify(option)}`);
     assert.deepEqual(result.answers[0]!.selected, ['甲', '乙']);
   }
 });
 
+test('作答：多选表单提交读 form_value.answer', () => {
+  const multi: InteractionQuestion = { ...CHOICE, id: 'q2', multiSelect: true };
+  const store = storeWith(multi);
+  const result = answerFromAction({ d: 'dlv_1', q: 'q2' }, undefined, { answer: ['1', '0'] }, 'ou', store, 0);
+  assert.ok(!('reason' in result));
+  assert.deepEqual(result.answers[0]!.selected, ['乙', '甲']);
+});
+
 test('作答：客户端回传文案时按文案兜底', () => {
   const store = storeWith(CHOICE);
-  const result = answerFromAction({ d: 'dlv_1', q: 'q1' }, '乙', 'ou', store, 0);
+  const result = answerFromAction({ d: 'dlv_1', q: 'q1' }, '乙', undefined, 'ou', store, 0);
   assert.ok(!('reason' in result));
   assert.deepEqual(result.answers[0]!.selected, ['乙']);
 });
@@ -213,6 +235,6 @@ test('作答：缺少标识或选项越界都算无效', () => {
 });
 
 function reasonOf(store: InteractionStore, value: Record<string, unknown>, now = 0): string {
-  const result = answerFromAction(value, undefined, 'ou', store, now);
+  const result = answerFromAction(value, undefined, undefined, 'ou', store, now);
   return 'reason' in result ? result.reason : 'accepted';
 }
