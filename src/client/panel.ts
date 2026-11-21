@@ -40,6 +40,9 @@ interface Snapshot {
     directWorkspaceId: string;
     questionReminders: boolean;
     questionDelayMinutes: number;
+    longTaskReminders: boolean;
+    longTaskMinutes: number;
+    failureReminders: boolean;
   };
   reminders: {
     pendingQuestions: number;
@@ -81,6 +84,7 @@ export function LarkSettingsPanel(props: any) {
   const [workspaces, setWorkspaces] = useState<WorkspaceCatalog | null>(null);
   /** 提醒延迟的草稿：首次读到设置时填一次，之后不覆盖用户输入。 */
   const [delay, setDelay] = useState<string | null>(null);
+  const [longMinutes, setLongMinutes] = useState<string | null>(null);
 
   const applySnapshot = useCallback((next: Snapshot) => {
     setSnapshot(next);
@@ -124,6 +128,12 @@ export function LarkSettingsPanel(props: any) {
     if (delayValue === undefined) return;
     setDelay((current) => current ?? String(delayValue));
   }, [delayValue]);
+
+  const longValue = snapshot?.settings.longTaskMinutes;
+  useEffect(() => {
+    if (longValue === undefined) return;
+    setLongMinutes((current) => current ?? String(longValue));
+  }, [longValue]);
 
   const run = async (name: string, work: () => Promise<Snapshot | void>, success?: string) => {
     setBusy(name);
@@ -203,7 +213,10 @@ export function LarkSettingsPanel(props: any) {
   const saveSettings = (patch: Record<string, unknown>) =>
     run('settings', async () => rpcCall<Snapshot>(ENDPOINTS.setSettings, patch));
 
-  const toggle = (key: 'enabled' | 'superagent' | 'typingIndicator' | 'replyStatus' | 'questionReminders', value: boolean) => {
+  const toggle = (
+    key: 'enabled' | 'superagent' | 'typingIndicator' | 'replyStatus' | 'questionReminders' | 'longTaskReminders' | 'failureReminders',
+    value: boolean,
+  ) => {
     void saveSettings({ [key]: value });
   };
 
@@ -223,6 +236,23 @@ export function LarkSettingsPanel(props: any) {
       async () => {
         const result = await rpcCall<Snapshot>(ENDPOINTS.setSettings, { questionDelayMinutes: delayNumber });
         setDelay(String(delayNumber));
+        return result;
+      },
+      t('common.saved'),
+    );
+  };
+
+  const longText = (longMinutes ?? '').trim();
+  const longNumber = Number(longText);
+  const longValid = /^\d+$/u.test(longText) && longNumber >= 1 && longNumber <= 1440;
+
+  const saveLongMinutes = () => {
+    if (!longValid) return;
+    void run(
+      'longTask',
+      async () => {
+        const result = await rpcCall<Snapshot>(ENDPOINTS.setSettings, { longTaskMinutes: longNumber });
+        setLongMinutes(String(longNumber));
         return result;
       },
       t('common.saved'),
@@ -447,6 +477,60 @@ export function LarkSettingsPanel(props: any) {
         h(Switch, { checked: settings?.replyStatus === true, onChange: (value: boolean) => toggle('replyStatus', value), label: t('behavior.replyStatus') }),
         t('behavior.replyStatus'),
         t('behavior.replyStatusHint'),
+      ),
+    ),
+
+    h(
+      'section',
+      { className: 'lark-card' },
+      h('div', { className: 'lark-card-title' }, t('longTask.title')),
+      h('div', { className: 'lark-card-hint' }, t('longTask.hint')),
+      toggleRow(
+        h(Switch, {
+          checked: settings?.longTaskReminders === true,
+          disabled: settings?.superagent === true || busy !== '',
+          onChange: (value: boolean) => toggle('longTaskReminders', value),
+          label: t('longTask.enabled'),
+        }),
+        t('longTask.enabled'),
+        settings?.superagent === true ? t('reminder.coreHint') : t('longTask.enabledHint'),
+      ),
+      fieldRow(
+        t('longTask.threshold'),
+        h(
+          'div',
+          { className: 'lark-inline-save' },
+          h(Input, {
+            className: 'lark-input lark-input-narrow',
+            value: longMinutes ?? '',
+            inputMode: 'numeric',
+            disabled: settings?.superagent === true || settings?.longTaskReminders !== true,
+            onChange: (event: any) => setLongMinutes(event.target.value),
+          }),
+          h('span', { className: 'lark-unit' }, t('common.minutes')),
+          h(
+            Button,
+            {
+              variant: 'outline',
+              disabled: busy !== '' || settings?.superagent === true || settings?.longTaskReminders !== true || !longValid,
+              onClick: saveLongMinutes,
+            },
+            t('common.save'),
+          ),
+        ),
+      ),
+      longText !== '' && !longValid
+        ? h('div', { className: 'lark-banner', 'data-tone': 'error' }, t('longTask.thresholdInvalid'))
+        : null,
+      toggleRow(
+        h(Switch, {
+          checked: settings?.failureReminders === true,
+          disabled: settings?.superagent === true || busy !== '',
+          onChange: (value: boolean) => toggle('failureReminders', value),
+          label: t('longTask.failure'),
+        }),
+        t('longTask.failure'),
+        settings?.superagent === true ? t('reminder.coreHint') : t('longTask.failureHint'),
       ),
     ),
 

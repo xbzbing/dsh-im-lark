@@ -33,6 +33,7 @@ import { DirectBindingStore, OwnerStore } from './state/direct.ts';
 import type { StandaloneController } from './standalone.ts';
 import { ensurePrivateDir } from './state/files.ts';
 import { resolveDefaultWorkspace } from './state/paths.ts';
+import { LongTaskNotifier } from './long-tasks.ts';
 import { ReminderCenter } from './reminders.ts';
 import type { QuestionNext, QuestionRequest } from './questions.ts';
 import type { ApprovalNext } from './approvals.ts';
@@ -120,6 +121,7 @@ export async function apply(ctx: PluginContext, config: PluginConfig | unknown =
     unregisterCore();
     // 连接要重建：在等的提醒先交回 Web，别让主人对着一条不会再被接收的提醒作答。
     reminders.cancelAll('飞书连接已重建');
+    longTasks.clear();
     runtime.setSink(undefined);
     stack?.dispose();
     stack = null;
@@ -216,6 +218,11 @@ export async function apply(ctx: PluginContext, config: PluginConfig | unknown =
     onSettings: (saved) => {
       applyRouting();
       reminders.configure({ enabled: saved.questionReminders, delayMinutes: saved.questionDelayMinutes });
+      longTasks.configure({
+        enabled: saved.longTaskReminders,
+        failureReminders: saved.failureReminders,
+        thresholdMinutes: saved.longTaskMinutes,
+      });
     },
   });
 
@@ -234,6 +241,32 @@ export async function apply(ctx: PluginContext, config: PluginConfig | unknown =
     logger,
   });
 
+  /**
+   * 长程任务与失败任务的提醒。
+   *
+   * 与问题/审批提醒同样的生效条件：只有独立模式才发，接入核心后由核心负责，避免
+   * 同一件事两遍。绑定的那个会话在回合结束时已经把回答发回飞书，完成提醒跳过它，
+   * 失败提醒不跳——失败时回答通常是空的，那条提醒才是唯一的信号。
+   */
+  const longTasks = new LongTaskNotifier({
+    send: async (text) => (stack === null ? false : stack.notify(text)),
+    recipient: () => owners.peek()?.openId ?? null,
+    isActive: () => !coreEnabled() && runtime.active && stack !== null,
+    titleOf: (sessionId) => {
+      const status = stack?.standalone.status();
+      if (status === undefined || !status.bound || status.sessionId !== sessionId) return null;
+      return bindings.peek()?.title ?? null;
+    },
+    suppressCompletion: (sessionId) => {
+      const status = stack?.standalone.status();
+      return status !== undefined && status.bound && status.sessionId === sessionId;
+    },
+    enabled: normalized.longTaskReminders,
+    failureReminders: normalized.failureReminders,
+    thresholdMinutes: normalized.longTaskMinutes,
+    logger,
+  });
+
   // 扫码创建应用：凭据只在 SDK 授权成功后才落盘，再让运行期按新凭据重连。
   const registration = new AppRegistration({
     start: (input) => registerApp(input),
@@ -248,6 +281,7 @@ export async function apply(ctx: PluginContext, config: PluginConfig | unknown =
   ctx.effect?.(
     () => () => {
       reminders.close();
+      longTasks.clear();
       runtime.stop();
       teardown();
     },
@@ -300,6 +334,7 @@ export async function apply(ctx: PluginContext, config: PluginConfig | unknown =
     ctx.on(
       'session/event',
       ((session: unknown, event: unknown) => {
+        longTasks.handleEvent(session, event);
         const id = typeof session === 'string' ? session : ((session as { id?: unknown } | null)?.id ?? '');
         if (typeof id === 'string' && id !== '') stack?.standalone.handleEvent(id, event);
       }) as unknown as (...args: unknown[]) => void,

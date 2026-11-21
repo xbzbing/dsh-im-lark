@@ -199,6 +199,35 @@ test('面板：设置只接受白名单字段，越界整数被拒', async () =>
   });
 });
 
+test('面板：长程任务与失败提醒设置能保存，阈值越界被拒', async () => {
+  await withTempDir(async (dir) => {
+    const { deps, calls } = await harness(dir.path);
+
+    await handleEndpoint(deps, ENDPOINTS.SETTINGS_SET, { longTaskReminders: false, failureReminders: false });
+    assert.deepEqual(calls.applied[0], { longTaskReminders: false, failureReminders: false });
+
+    await handleEndpoint(deps, ENDPOINTS.SETTINGS_SET, { longTaskMinutes: 90 });
+    assert.deepEqual(calls.applied[1], { longTaskMinutes: 90 });
+
+    await assert.rejects(handleEndpoint(deps, ENDPOINTS.SETTINGS_SET, { longTaskMinutes: 0 }), /1–1440/);
+    await assert.rejects(handleEndpoint(deps, ENDPOINTS.SETTINGS_SET, { longTaskMinutes: 1441 }), /1–1440/);
+    await assert.rejects(handleEndpoint(deps, ENDPOINTS.SETTINGS_SET, { longTaskReminders: 'on' }), /布尔值/);
+  });
+});
+
+test('面板：快照带上长程任务与失败提醒的当前值', async () => {
+  await withTempDir(async (dir) => {
+    const { deps } = await harness(dir.path);
+    const snapshot = (await handleEndpoint(deps, ENDPOINTS.STATUS, {})) as {
+      settings: { longTaskReminders: boolean; longTaskMinutes: number; failureReminders: boolean };
+    };
+
+    assert.equal(snapshot.settings.longTaskReminders, true);
+    assert.equal(snapshot.settings.longTaskMinutes, 30);
+    assert.equal(snapshot.settings.failureReminders, true);
+  });
+});
+
 test('面板：工作区列表与选择校验', async () => {
   await withTempDir(async (dir) => {
     const { deps, calls } = await harness(dir.path);

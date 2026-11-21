@@ -14,6 +14,7 @@
 
 import { PANEL_CONTRACT, PLUGIN_VERSION, RPC_CHANNEL, RPC_ENDPOINT, RPC_PREFIX } from '../shared/version.ts';
 import { normalizeQuestionDelayMinutes } from './config.ts';
+import { normalizeLongTaskMinutes } from './long-tasks.ts';
 import type { LocalConfigStore, NormalizedConfig } from './config.ts';
 import { errorDetail, injectOptional } from './host-context.ts';
 import type { ConnectionLike, PluginContext, PluginLogger, RpcResult } from './host-context.ts';
@@ -97,6 +98,12 @@ export interface PanelSnapshot {
     directWorkspaceId: string;
     questionReminders: boolean;
     questionDelayMinutes: number;
+    /** 独立模式：长程任务完成提醒。 */
+    longTaskReminders: boolean;
+    /** 长程任务阈值（分钟）。 */
+    longTaskMinutes: number;
+    /** 独立模式：任务失败提醒。 */
+    failureReminders: boolean;
   };
   /** 提醒的待答数与最近错误：面板据此显示「有 N 条在等」。 */
   reminders: {
@@ -130,6 +137,9 @@ export function snapshotOf(deps: PanelDeps): PanelSnapshot {
       directWorkspaceId: settings.directWorkspaceId,
       questionReminders: settings.questionReminders,
       questionDelayMinutes: settings.questionDelayMinutes,
+      longTaskReminders: settings.longTaskReminders,
+      longTaskMinutes: settings.longTaskMinutes,
+      failureReminders: settings.failureReminders,
     },
     reminders: {
       pendingQuestions: reminders.pendingQuestions,
@@ -195,11 +205,25 @@ export async function handleEndpoint(deps: PanelDeps, endpoint: string, payload:
       const input = payloadOf(payload);
       const patch: Record<string, unknown> = {};
 
-      for (const key of ['enabled', 'superagent', 'typingIndicator', 'replyStatus', 'questionReminders'] as const) {
+      for (const key of [
+        'enabled',
+        'superagent',
+        'typingIndicator',
+        'replyStatus',
+        'questionReminders',
+        'longTaskReminders',
+        'failureReminders',
+      ] as const) {
         if (input[key] !== undefined) {
           if (typeof input[key] !== 'boolean') throw codedError(`${key} 必须是布尔值`, 'invalid-config');
           patch[key] = input[key];
         }
+      }
+
+      if (input.longTaskMinutes !== undefined) {
+        const value = normalizeLongTaskMinutes(input.longTaskMinutes);
+        if (value === undefined) throw codedError('长程任务阈值必须是 1–1440 的整数分钟', 'invalid-config');
+        patch.longTaskMinutes = value;
       }
 
       if (input.questionDelayMinutes !== undefined) {

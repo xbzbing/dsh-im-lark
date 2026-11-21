@@ -17,6 +17,7 @@ import { readJsonIfPresent, writePrivateFile } from './state/files.ts';
 import type { StateLogger } from './state/files.ts';
 import { resolveDataDir } from './state/paths.ts';
 import type { LarkDomain } from './lark/types.ts';
+import { DEFAULT_LONG_TASK_MINUTES, normalizeLongTaskMinutes } from './long-tasks.ts';
 
 /** 独立模式里回合正在跑时又来一条消息的提交方式：插话（steer）或排队（queue）。 */
 export type BusyMode = 'queue' | 'steer';
@@ -26,6 +27,12 @@ export const DEFAULT_DIRECT_BUSY_MODE: BusyMode = 'steer';
 
 /** 问题与审批提醒：默认开。 */
 export const DEFAULT_QUESTION_REMINDERS = true;
+
+/** 长程任务提醒默认开：任务是主人自己起的，跑久了要有回音。 */
+export const DEFAULT_LONG_TASK_REMINDERS = true;
+
+/** 失败任务提醒默认开：没做成必须知道。 */
+export const DEFAULT_FAILURE_REMINDERS = true;
 
 /** 提醒前等多久（分钟）：这段时间在 Web 端答完就不打扰。 */
 export const DEFAULT_QUESTION_DELAY_MINUTES = 5;
@@ -56,6 +63,12 @@ export interface PluginConfig {
   questionReminders?: boolean;
   /** 提醒前等多久（分钟）；这段时间在 Web 端答完就不打扰。 */
   questionDelayMinutes?: number;
+  /** 独立模式下，回合耗时超过阈值时发完成提醒；默认开。 */
+  longTaskReminders?: boolean;
+  /** 长程任务阈值（分钟），默认 30。 */
+  longTaskMinutes?: number;
+  /** 独立模式下，回合失败或被外部中止时发提醒；默认开。 */
+  failureReminders?: boolean;
   /** 面板 RPC 的路径段，默认包名。 */
   rpcPath?: string;
 }
@@ -73,6 +86,9 @@ export interface NormalizedConfig {
   replyStatus: boolean;
   questionReminders: boolean;
   questionDelayMinutes: number;
+  longTaskReminders: boolean;
+  longTaskMinutes: number;
+  failureReminders: boolean;
   rpcPath: string;
 }
 
@@ -127,6 +143,9 @@ export function normalizePluginConfig(raw: unknown): NormalizedConfig {
     replyStatus: asBoolean(input.replyStatus) ?? false,
     questionReminders: asBoolean(input.questionReminders) ?? DEFAULT_QUESTION_REMINDERS,
     questionDelayMinutes: normalizeQuestionDelayMinutes(input.questionDelayMinutes) ?? DEFAULT_QUESTION_DELAY_MINUTES,
+    longTaskReminders: asBoolean(input.longTaskReminders) ?? DEFAULT_LONG_TASK_REMINDERS,
+    longTaskMinutes: normalizeLongTaskMinutes(input.longTaskMinutes) ?? DEFAULT_LONG_TASK_MINUTES,
+    failureReminders: asBoolean(input.failureReminders) ?? DEFAULT_FAILURE_REMINDERS,
     rpcPath: asString(input.rpcPath) ?? 'dsh-im-lark',
   };
 }
@@ -154,6 +173,12 @@ export interface LocalSettings {
   questionReminders: boolean;
   /** 提醒前等多久（分钟）。 */
   questionDelayMinutes: number;
+  /** 长程任务完成提醒。 */
+  longTaskReminders: boolean;
+  /** 长程任务阈值（分钟）。 */
+  longTaskMinutes: number;
+  /** 失败任务提醒。 */
+  failureReminders: boolean;
 }
 
 export function defaultSettings(config: NormalizedConfig): LocalSettings {
@@ -166,6 +191,9 @@ export function defaultSettings(config: NormalizedConfig): LocalSettings {
     typingIndicator: config.typingIndicator,
     questionReminders: config.questionReminders,
     questionDelayMinutes: config.questionDelayMinutes,
+    longTaskReminders: config.longTaskReminders,
+    longTaskMinutes: config.longTaskMinutes,
+    failureReminders: config.failureReminders,
   };
 }
 
@@ -184,6 +212,9 @@ export function normalizeSettings(raw: unknown, config: NormalizedConfig): Local
     typingIndicator: asBoolean(input.typingIndicator) ?? fallback.typingIndicator,
     questionReminders: asBoolean(input.questionReminders) ?? fallback.questionReminders,
     questionDelayMinutes: normalizeQuestionDelayMinutes(input.questionDelayMinutes) ?? fallback.questionDelayMinutes,
+    longTaskReminders: asBoolean(input.longTaskReminders) ?? fallback.longTaskReminders,
+    longTaskMinutes: normalizeLongTaskMinutes(input.longTaskMinutes) ?? fallback.longTaskMinutes,
+    failureReminders: asBoolean(input.failureReminders) ?? fallback.failureReminders,
   };
 }
 

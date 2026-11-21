@@ -60,8 +60,8 @@
   "register.done": "应用已创建，App ID 尾号 {appId}",
   "register.failed": "创建应用失败，请重试",
   "behavior.title": "消息行为",
-  "behavior.typing": "「正在处理」表情",
-  "behavior.typingHint": "收到消息时加一个表情，处理完移除。飞书没有官方输入状态接口。",
+  "behavior.typing": "处理状态表情",
+  "behavior.typingHint": "收到消息先打 Typing，处理完换成 DONE。飞书没有官方输入状态接口。",
   "behavior.replyStatus": "回复末尾显示状态",
   "behavior.replyStatusHint": "附加模型、推理等级与耗时；仅独立会话生效。",
   "common.save": "保存",
@@ -88,5 +88,13 @@
   "reminder.pending": "正在等：{questions} 个问题，{approvals} 个授权。",
   "error.connection": "连不上 Host：刷新页面再试。",
   "error.contract": "面板与插件版本不一致，请重启 dsh web。",
-  "error.generic": "操作失败"
+  "error.generic": "操作失败",
+  "longTask.title": "长程任务提醒",
+  "longTask.hint": "回合跑得久或失败时，用飞书私聊提醒你；只在独立会话生效。",
+  "longTask.enabled": "完成提醒",
+  "longTask.enabledHint": "回合耗时超过阈值时，结束后发一条带耗时与结论的提醒。",
+  "longTask.threshold": "长任务阈值",
+  "longTask.thresholdInvalid": "阈值必须是 1–1440 的整数分钟。",
+  "longTask.failure": "失败提醒",
+  "longTask.failureHint": "回合失败或被外部中止时立刻提醒，不看耗时。自己按的停止不算失败。"
 }

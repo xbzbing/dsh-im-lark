@@ -60,8 +60,8 @@
   "register.done": "App created; App ID ends with {appId}",
   "register.failed": "Failed to create the app. Please retry.",
   "behavior.title": "Message behavior",
-  "behavior.typing": "“Working” reaction",
-  "behavior.typingHint": "Adds a reaction while handling. Feishu has no official typing API.",
+  "behavior.typing": "Working / done reaction",
+  "behavior.typingHint": "Marks the message Typing while handling, then DONE when finished. Feishu has no official typing API.",
   "behavior.replyStatus": "Status line in replies",
   "behavior.replyStatusHint": "Model, reasoning effort and duration; standalone sessions only.",
   "common.save": "Save",
@@ -88,5 +88,13 @@
   "reminder.pending": "Waiting: {questions} question(s), {approvals} approval(s).",
   "error.connection": "Cannot reach the host. Refresh the page and retry.",
   "error.contract": "Panel and plugin versions differ. Restart dsh web.",
-  "error.generic": "Operation failed"
+  "error.generic": "Operation failed",
+  "longTask.title": "Long-running tasks",
+  "longTask.hint": "Notify you in Feishu when a turn runs long or fails. Standalone sessions only.",
+  "longTask.enabled": "Completion reminder",
+  "longTask.enabledHint": "Send duration and conclusion after a turn that ran past the threshold.",
+  "longTask.threshold": "Long-task threshold",
+  "longTask.thresholdInvalid": "The threshold must be a whole number of minutes between 1 and 1440.",
+  "longTask.failure": "Failure reminder",
+  "longTask.failureHint": "Notify immediately when a turn fails or is aborted externally, regardless of duration. A stop you pressed yourself does not count."
 }
