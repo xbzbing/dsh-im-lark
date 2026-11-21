@@ -495,6 +495,204 @@ test('工作区：宿主一直不返回时按超时放弃', async () => {
   });
 });
 
+/* ------------------------------------------------------------ 提问卡片（独立模式） */
+
+/** 没配置 Web 端监听器：broker 会继续等飞书作答。 */
+function noProvider(): Error {
+  const error = new Error('没有监听者');
+  (error as { code?: string }).code = 'NO_PROVIDER';
+  return error;
+}
+
+/** 从渲染出的卡片里取回提醒 id：单选在按钮 value，多选在下拉 value。 */
+function reminderOf(card: Record<string, any>): string {
+  const element = card.body.elements[1] as Record<string, any>;
+  const value = element.tag === 'multi_select_static'
+    ? element.behaviors[0].value
+    : element.columns[0].elements[0].behaviors[0].value;
+  return value.r as string;
+}
+
+test('问题提醒：单题选项发卡片而不是文字，卡片回调结算作答并改终态', async () => {
+  const cards: Array<Record<string, any>> = [];
+  const patches: Array<{ messageId: string; card: Record<string, any> }> = [];
+  let texts = 0;
+  const broker = new QuestionBroker({
+    send: async () => {
+      texts += 1;
+      return true;
+    },
+    sendCard: async (card) => {
+      cards.push(card as Record<string, any>);
+      return 'om_card';
+    },
+    patchCard: async (messageId, card) => {
+      patches.push({ messageId, card: card as Record<string, any> });
+    },
+    recipient: () => 'ou_owner',
+    isRoot: () => true,
+    delayMs: () => 0,
+  });
+
+  const request: { questions: unknown; signal?: AbortSignal } = {
+    questions: [{ id: 'q1', question: '选一个', options: OPTIONS }],
+  };
+  const pending = broker.handle(request, async () => {
+    throw noProvider();
+  }, true);
+  await tick();
+
+  assert.equal(cards.length, 1);
+  assert.equal(texts, 0);
+  assert.equal(broker.snapshot().pending, 1);
+
+  const reminderId = reminderOf(cards[0]!);
+  assert.equal(broker.applyCardAction({ value: { r: reminderId, q: 'q1', o: 1 } }), true);
+  assert.deepEqual(await pending, { answers: [{ id: 'q1', selected: ['乙'] }] });
+  await tick();
+
+  assert.equal(patches.length, 1);
+  assert.equal(patches[0]!.messageId, 'om_card');
+  assert.match(JSON.stringify(patches[0]!.card), /已在飞书作答：乙/u);
+  assert.equal(request.signal?.aborted, true);
+  assert.equal(broker.snapshot().pending, 0);
+});
+
+test('问题提醒：多选卡的回调带回多项', async () => {
+  const cards: Array<Record<string, any>> = [];
+  const broker = new QuestionBroker({
+    send: async () => true,
+    sendCard: async (card) => {
+      cards.push(card as Record<string, any>);
+      return 'om_multi';
+    },
+    recipient: () => 'ou_owner',
+    isRoot: () => true,
+    delayMs: () => 0,
+  });
+
+  const pending = broker.handle(
+    { questions: [{ id: 'q1', question: '多选', options: OPTIONS, multiSelect: true }] },
+    async () => {
+      throw noProvider();
+    },
+    true,
+  );
+  await tick();
+
+  const reminderId = reminderOf(cards[0]!);
+  assert.equal(broker.applyCardAction({ value: { r: reminderId, q: 'q1' }, option: ['0', '2'] }), true);
+  assert.deepEqual(await pending, { answers: [{ id: 'q1', selected: ['甲', '丙'] }] });
+});
+
+test('问题提醒：卡片发不出去就退回文字', async () => {
+  let texts = 0;
+  let cards = 0;
+  const broker = new QuestionBroker({
+    send: async () => {
+      texts += 1;
+      return true;
+    },
+    sendCard: async () => {
+      cards += 1;
+      return null;
+    },
+    recipient: () => 'ou_owner',
+    isRoot: () => true,
+    delayMs: () => 0,
+  });
+
+  broker.handle(
+    { questions: [{ id: 'q1', question: '选一个', options: OPTIONS }] },
+    async () => {
+      throw noProvider();
+    },
+    true,
+  );
+  await tick();
+
+  assert.equal(cards, 1);
+  assert.equal(texts, 1);
+  assert.equal(broker.applyCardAction({ value: { r: 'lark-q-1', q: 'q1', o: 0 } }), true);
+});
+
+test('问题提醒：多题仍然只发文字，不上卡片', async () => {
+  let cards = 0;
+  const sent: string[] = [];
+  const broker = new QuestionBroker({
+    send: async (text) => {
+      sent.push(text);
+      return true;
+    },
+    sendCard: async () => {
+      cards += 1;
+      return 'om_card';
+    },
+    recipient: () => 'ou_owner',
+    isRoot: () => true,
+    delayMs: () => 0,
+  });
+
+  broker.handle({ questions: questionsOf() }, async () => {
+    throw noProvider();
+  }, true);
+  await tick();
+
+  assert.equal(cards, 0);
+  assert.equal(sent.length, 1);
+  assert.match(sent[0]!, /第 1 题/u);
+});
+
+test('问题提醒：文字作答也会把卡片改成终态', async () => {
+  const patches: Array<Record<string, any>> = [];
+  const broker = new QuestionBroker({
+    send: async () => true,
+    sendCard: async () => 'om_card',
+    patchCard: async (_messageId, card) => {
+      patches.push(card as Record<string, any>);
+    },
+    recipient: () => 'ou_owner',
+    isRoot: () => true,
+    delayMs: () => 0,
+  });
+
+  const pending = broker.handle(
+    { questions: [{ id: 'q1', question: '选一个', options: OPTIONS }] },
+    async () => {
+      throw noProvider();
+    },
+    true,
+  );
+  await tick();
+
+  assert.equal(broker.reply('2'), true);
+  assert.deepEqual(await pending, { answers: [{ id: 'q1', selected: ['乙'] }] });
+  await tick();
+  assert.match(JSON.stringify(patches.at(-1)), /已在飞书作答：乙/u);
+});
+
+test('问题提醒：Web 先答时卡片改成「已在 Web 端作答」', async () => {
+  const patches: Array<Record<string, any>> = [];
+  const broker = new QuestionBroker({
+    send: async () => true,
+    sendCard: async () => 'om_card',
+    patchCard: async (_messageId, card) => {
+      patches.push(card as Record<string, any>);
+    },
+    recipient: () => 'ou_owner',
+    isRoot: () => true,
+    delayMs: () => 0,
+  });
+
+  assert.equal(
+    await broker.handle({ questions: [{ id: 'q1', question: '选一个', options: OPTIONS }] }, async () => 'web-answer', true),
+    'web-answer',
+  );
+  await tick();
+  assert.match(JSON.stringify(patches.at(-1)), /Web 端作答/u);
+  assert.equal(broker.snapshot().pending, 0);
+});
+
 function tick(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }

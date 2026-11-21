@@ -13,6 +13,8 @@
 
 import { answerFromText, looksLikeAnswer, normalizeQuestions, renderQuestions } from './reminder-text.ts';
 import type { AskQuestion, Answer } from './reminder-text.ts';
+import { answerFromCard, isCardAnswerable, renderReminderCard, renderReminderClosedCard } from './reminder-card.ts';
+import type { Card } from './cards.ts';
 import { PendingTable, abortReason, deferred, whenAborted } from './reminder-pending.ts';
 
 export interface ReminderLogger {
@@ -33,6 +35,10 @@ export type QuestionNext = () => Promise<unknown>;
 export interface QuestionBrokerOptions {
   /** 把提醒文本发给主人；返回是否发出去了。 */
   send: (text: string) => Promise<boolean>;
+  /** 发一张可作答的卡片，返回平台消息 id；没发出时 null（调用方退回文字）。 */
+  sendCard?: (card: Card) => Promise<string | null>;
+  /** 把已发出的卡片改成终态（已作答/已失效），失败只记日志。 */
+  patchCard?: (messageId: string, card: Card) => Promise<void>;
   /** 收件人（主人）；没登录/停用时应返回 null，此时完全不接管。 */
   recipient: () => string | null;
   /** 只提醒根会话（子代理的提问不打扰主人）；拿不到来源时放行。 */
@@ -54,7 +60,11 @@ export interface QuestionBrokerOptions {
 
 interface Pending {
   readonly id: string;
+  /** 提醒编号（#N）：卡片标题与终态卡都要用。 */
+  readonly no: number;
   readonly questions: AskQuestion[];
+  /** 卡片消息 id；文字提醒没有。 */
+  readonly cardMessageId?: string;
   /** 本地取消器：abort 会连带 abort 宿主看到的 union signal，Web 端据此收起卡片。 */
   readonly cancel: AbortController;
   resolve(answer: Answer): void;
@@ -123,7 +133,10 @@ export class QuestionBroker {
     const waited = deferred<void>();
     const delayTimer = delay > 0 ? setTimeout(() => waited.resolve(), delay) : null;
     delayTimer?.unref?.();
-    const text = renderQuestions(questions, ++this.#reminded);
+    const no = ++this.#reminded;
+    const text = renderQuestions(questions, no);
+    // 卡片回调要带着 id 找回待答，所以先领号再发。
+    const pendingId = this.#newId();
 
     try {
       if (delay > 0) {
@@ -137,9 +150,16 @@ export class QuestionBroker {
         if (early.kind === 'aborted') throw cancellation(request);
       }
 
-      const sent = await this.#options.send(text).catch(() => false);
+      const card = this.#cardFor(pendingId, no, questions);
+      let messageId: string | null = null;
+      if (card !== null) {
+        messageId = await this.#options.sendCard!(card).catch(() => null);
+      }
+      // 卡片发失败（平台拒绝、超限）就退回文字：卡片的可用性不该决定提醒发不发。
+      const sent = messageId !== null || (await this.#options.send(text).catch(() => false));
       // 发送是异步的；这期间可能已经停用/切到核心，cancelAll 看不到尚不存在的 pending。
       if (this.#closed || (this.#options.isActive !== undefined && !this.#options.isActive())) {
+        this.#closeCardOf(messageId ?? undefined, no, questions, '这条提醒已作废。');
         this.#noteError('问题提醒发送期间插件状态已变化，已交回 Web 端');
         return web;
       }
@@ -153,16 +173,23 @@ export class QuestionBroker {
         aborted.promise.then(() => ({ kind: 'aborted' as const })),
         Promise.resolve({ kind: 'continue' as const }),
       ]);
-      if (late.kind === 'web') return late.value;
+      if (late.kind === 'web') {
+        this.#closeCardOf(messageId ?? undefined, no, questions, '已在 Web 端作答，这条提醒失效。');
+        return late.value;
+      }
       if (late.kind === 'web-error') throw late.error;
-      if (late.kind === 'aborted') throw cancellation(request);
+      if (late.kind === 'aborted') {
+        this.#closeCardOf(messageId ?? undefined, no, questions, '这条提醒已作废。');
+        throw cancellation(request);
+      }
 
-      const pendingId = this.#newId();
       const answer = deferred<Answer>();
       const pending: Pending = {
         id: pendingId,
+        no,
         questions,
         cancel: local,
+        ...(messageId === null ? {} : { cardMessageId: messageId }),
         resolve: (value) => answer.resolve(value),
         reject: (error) => answer.reject(error),
       };
@@ -201,19 +228,31 @@ export class QuestionBroker {
           this.#options.logger?.info?.('问题已在飞书作答，Web 端投递作废');
           return outcome.value;
         }
-        if (outcome.kind === 'web') return outcome.value;
-        if (outcome.kind === 'web-error' || outcome.kind === 'im-error') throw outcome.error;
+        if (outcome.kind === 'web') {
+          this.#closeCard(pending, '已在 Web 端作答，这条提醒失效。');
+          return outcome.value;
+        }
+        if (outcome.kind === 'web-error') throw outcome.error;
+        if (outcome.kind === 'im-error') {
+          this.#closeCard(pending, '飞书作答失败，请在 Web 端作答。');
+          throw outcome.error;
+        }
         if (outcome.kind === 'timeout') {
           // 飞书这路到点放弃：Web 还在就真正交回，由它接着等作答。
           const webOutcome = await Promise.race([
             webSettled,
             aborted.promise.then(() => ({ kind: 'aborted' as const })),
           ]);
-          if (webOutcome.kind === 'web') return webOutcome.value;
+          if (webOutcome.kind === 'web') {
+            this.#closeCard(pending, '已在 Web 端作答，这条提醒失效。');
+            return webOutcome.value;
+          }
           if (webOutcome.kind === 'web-error') throw webOutcome.error;
+          this.#closeCard(pending, '等待超时，已交回 Web 端。');
           if (webOutcome.kind === 'none') throw abortReason('等待飞书作答超时');
         }
         // 带上取消方的原因：停机、切换接入方式、宿主自己取消，各自有可读的话。
+        this.#closeCard(pending, '这条提醒已作废。');
         throw cancellation(request);
       } finally {
         clearTimeout(timer);
@@ -236,9 +275,32 @@ export class QuestionBroker {
       if (answer === null) continue;
       pending.resolve(answer);
       this.#pending.delete(pending.id);
+      this.#closeCard(pending, `已在飞书作答：${describeAnswer(answer)}`);
       return true;
     }
     return false;
+  }
+
+  /**
+   * 卡片回调：认出是哪条提醒、结算作答；返回 true 表示这条回调已被消化。
+   *
+   * 认不出（不是本插件发的卡片、提醒已失效）返回 false，交给核心桥按「未知交付」
+   * 处理——这样独立模式与核心模式的卡片回调走同一条入口。
+   */
+  applyCardAction(action: { value: Record<string, unknown>; option?: unknown }): boolean {
+    const reminderId = typeof action.value.r === 'string' ? action.value.r : '';
+    if (reminderId === '') return false;
+    const pending = this.#pending.newestFirst().find((item) => item.id === reminderId);
+    if (pending === undefined) return false;
+    const questionId = typeof action.value.q === 'string' ? action.value.q : '';
+    const question = pending.questions.find((item) => item.id === questionId);
+    if (question === undefined) return false;
+    const answer = answerFromCard(question, action.value, action.option);
+    if (answer === null) return false;
+    pending.resolve({ answers: [answer] });
+    this.#pending.delete(pending.id);
+    this.#closeCard(pending, `已在飞书作答：${answer.selected.join('、')}`);
+    return true;
   }
 
   /** 停机/停用：把所有等待中的提问交回 Web（abort 本地信号，不吞掉请求）。 */
@@ -246,6 +308,7 @@ export class QuestionBroker {
     for (const pending of this.#pending.values()) {
       pending.cancel.abort(abortReason(reason));
       pending.reject(abortReason(reason));
+      this.#closeCard(pending, `这条提醒已作废：${reason}`);
     }
     this.#pending.clear();
   }
@@ -270,11 +333,50 @@ export class QuestionBroker {
   #drop(pending: Pending): void {
     pending.cancel.abort(abortReason('提问过多'));
     pending.reject(abortReason('提问过多'));
+    this.#closeCard(pending, '提问过多，这条提醒已作废。');
+  }
+
+  /** 能上卡片就渲染一张；装不下/不是单题选择时返回 null，调用方退回文字。 */
+  #cardFor(reminderId: string, no: number, questions: readonly AskQuestion[]): Card | null {
+    if (this.#options.sendCard === undefined || !isCardAnswerable(questions)) return null;
+    const question = questions[0];
+    if (question === undefined) return null;
+    try {
+      return renderReminderCard({ reminderId, no, question });
+    } catch {
+      return null;
+    }
+  }
+
+  /** 原卡片改终态；失败只记日志，不影响作答本身。 */
+  #closeCard(pending: Pending, outcome: string): void {
+    this.#closeCardOf(pending.cardMessageId, pending.no, pending.questions, outcome);
+  }
+
+  #closeCardOf(
+    cardMessageId: string | undefined,
+    no: number,
+    questions: readonly AskQuestion[],
+    outcome: string,
+  ): void {
+    if (cardMessageId === undefined || this.#options.patchCard === undefined) return;
+    const question = questions[0];
+    if (question === undefined) return;
+    const card = renderReminderClosedCard({ no, question, outcome });
+    void this.#options.patchCard(cardMessageId, card).catch(() => {});
   }
 
   #noteError(message: string): void {
     this.#lastError = { at: this.#now(), message };
   }
+}
+
+/** 文字作答的摘要：选项用「、」连起来，自由输入原样截断。 */
+function describeAnswer(answer: Answer): string {
+  const item = answer.answers[0];
+  if (item === undefined) return '（空作答）';
+  if (item.selected.length > 0) return item.selected.join('、');
+  return (item.custom ?? '').slice(0, 60);
 }
 
 /** Web 端那一路的结果：答了、没有监听者、或者它自己出错。 */

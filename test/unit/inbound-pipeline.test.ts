@@ -16,6 +16,7 @@ interface SetupOptions {
   imageBytes?: Uint8Array;
   downloadFails?: boolean;
   isOwner?: (sender: string) => boolean | undefined;
+  claimCard?: (action: { value: Record<string, unknown>; option?: unknown }) => boolean;
 }
 
 function setup(options: SetupOptions = {}) {
@@ -84,6 +85,7 @@ function setup(options: SetupOptions = {}) {
     ...(options.ownerOpenId === undefined ? {} : { ownerOpenId: () => options.ownerOpenId }),
     features: () => options.features ?? [],
     ...(options.isOwner === undefined ? {} : { isOwner: options.isOwner }),
+    ...(options.claimCard === undefined ? {} : { claimCard: options.claimCard }),
   });
 
   return { pipeline, bridge, api, received, answers, reactions, removed, patches, downloads };
@@ -331,6 +333,51 @@ test('流水线：卡片回调转成作答，并改写终态卡', async () => {
   assert.deepEqual(answers[0]!.answers, [{ id: 'q1', selected: ['甲'] }]);
   assert.equal(patches.length, 1);
   void api;
+});
+
+test('流水线：提醒先认领卡片回调，认领后不再交给核心桥', async () => {
+  const claimed: Array<{ value: Record<string, unknown>; option?: unknown }> = [];
+  const { pipeline, bridge, answers } = setup({
+    claimCard: (action) => {
+      claimed.push(action);
+      return true;
+    },
+  });
+  await bridge.provider.deliver({
+    protocol: 'my-superagent/v1',
+    id: 'dlv_ask',
+    recipient: 'oc_1',
+    intent: 'action',
+    title: '选择',
+    body: '请选',
+    interaction: { questions: [{ id: 'q1', question: '选一个', options: [{ label: '甲' }] }] },
+  });
+
+  pipeline.handleCardAction(cardActionEvent({ r: 'lark-q-1', q: 'q1', o: 0 }));
+  await pipeline.drain();
+
+  assert.equal(claimed.length, 1);
+  assert.deepEqual(claimed[0]!.value, { r: 'lark-q-1', q: 'q1', o: 0 });
+  assert.equal(answers.length, 0);
+});
+
+test('流水线：提醒认不出卡片回调时仍交给核心桥', async () => {
+  const { pipeline, bridge, answers } = setup({ claimCard: () => false });
+  await bridge.provider.deliver({
+    protocol: 'my-superagent/v1',
+    id: 'dlv_ask',
+    recipient: 'oc_1',
+    intent: 'action',
+    title: '选择',
+    body: '请选',
+    interaction: { questions: [{ id: 'q1', question: '选一个', options: [{ label: '甲' }] }] },
+  });
+
+  pipeline.handleCardAction(cardActionEvent({ d: 'dlv_ask', q: 'q1', o: 0 }));
+  await pipeline.drain();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(answers.length, 1);
 });
 
 test('流水线：非主人的卡片回调被忽略', async () => {

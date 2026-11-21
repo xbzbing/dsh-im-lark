@@ -10,6 +10,7 @@
  */
 
 import { ApprovalBroker } from './approvals.ts';
+import type { Card } from './cards.ts';
 import type { ApprovalNext } from './approvals.ts';
 import { QuestionBroker } from './questions.ts';
 import type { QuestionNext, QuestionRequest, ReminderLogger } from './questions.ts';
@@ -76,6 +77,10 @@ class SendGate {
 
 export interface ReminderCenterOptions {
   send: (text: string) => Promise<boolean>;
+  /** 发一张可作答的卡片（返回平台消息 id）；没配置时提问一律走文字。 */
+  sendCard?: (card: Card) => Promise<string | null>;
+  /** 把已发出的卡片改成终态；失败只记日志。 */
+  patchCard?: (messageId: string, card: Card) => Promise<void>;
   recipient: () => string | null;
   /** 当前是否仍然允许接管（独立模式且连接可用）。 */
   isActive: () => boolean;
@@ -120,6 +125,8 @@ export class ReminderCenter {
     };
     this.#questions = new QuestionBroker({
       ...shared,
+      ...(options.sendCard === undefined ? {} : { sendCard: (card: Card) => this.#deliverCard(card) }),
+      ...(options.patchCard === undefined ? {} : { patchCard: options.patchCard }),
       isRoot: isRootAgent,
       onSent: () => {
         this.#lastSent = 'question';
@@ -162,6 +169,11 @@ export class ReminderCenter {
     return this.#approvals.handle(request, next, active);
   }
 
+  /** 卡片回调：只可能是提问卡；返回 true 表示这条回调已被消化。 */
+  applyCardAction(action: { value: Record<string, unknown>; option?: unknown }): boolean {
+    return this.#questions.applyCardAction(action);
+  }
+
   /**
    * 入站文本先认最后发的那条提醒。
    *
@@ -192,6 +204,18 @@ export class ReminderCenter {
   close(): void {
     this.#questions.close();
     this.#approvals.close();
+  }
+
+  async #deliverCard(card: Card): Promise<string | null> {
+    if (!this.#options.isActive() || this.#options.sendCard === undefined) return null;
+    await this.#gate.wait();
+    if (!this.#options.isActive()) return null;
+    try {
+      return await this.#options.sendCard(card);
+    } catch (error) {
+      this.#options.logger?.warn?.('提问卡片发送失败', error instanceof Error ? error.message : String(error));
+      return null;
+    }
   }
 
   async #deliver(text: string): Promise<boolean> {

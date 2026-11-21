@@ -1,0 +1,167 @@
+/**
+ * 独立模式的提问卡片：宿主问题 → 飞书交互卡片，卡片回调 → 协议作答。
+ *
+ * 只处理「一道题、有选项、不是审批/计划审阅」这一种：多题与自由输入在卡片里答不完
+ * （核心要求一次提交全部问题），仍走文字提醒（`reminder-text.ts`）。卡片只做两件
+ * 事——把选项摆出来、把选中的文案还原成作答；状态机与竞答在 `questions.ts`。
+ *
+ * 回调里的 `value` 用短键（`{r,q,o}`）：卡片体积敏感，且 `value` 必须是对象。
+ */
+
+import { cardFits } from './cards.ts';
+import type { Card } from './cards.ts';
+import type { AskQuestion } from './reminder-text.ts';
+
+export const CARD_SCHEMA = '2.0';
+
+/** 一张卡最多摆多少选项：再多就别指望在 IM 里点得清，退回文字。 */
+const MAX_OPTIONS = 20;
+
+/** 这道题能不能用卡片作答。 */
+export function isCardAnswerable(questions: readonly AskQuestion[]): boolean {
+  if (questions.length !== 1) return false;
+  const question = questions[0];
+  if (question === undefined) return false;
+  const options = question.options ?? [];
+  if (options.length === 0 || options.length > MAX_OPTIONS) return false;
+  const kind = question.intent?.kind;
+  return kind !== 'approval' && kind !== 'plan-review';
+}
+
+export interface ReminderCardInput {
+  /** 提醒 id：回调里带回来，据此找回待答。 */
+  reminderId: string;
+  /** 提醒编号（#N），主人回复文字时也用得上。 */
+  no: number;
+  question: AskQuestion;
+}
+
+/** 题目 → 一张可作答的卡片；装不下时由调用方退回文字提醒。 */
+export function renderReminderCard(input: ReminderCardInput): Card {
+  const { reminderId, no, question } = input;
+  const elements: unknown[] = [stemOf(question)];
+  const options = question.options ?? [];
+
+  if (question.multiSelect === true) {
+    elements.push({
+      tag: 'multi_select_static',
+      placeholder: { tag: 'plain_text', content: '可多选，选完提交' },
+      options: options.map((option, index) => ({
+        text: { tag: 'plain_text', content: option.label },
+        value: String(index),
+      })),
+      behaviors: [{ type: 'callback', value: { r: reminderId, q: question.id } }],
+    });
+  } else {
+    elements.push({
+      tag: 'column_set',
+      flex_mode: 'flow',
+      columns: options.map((option, index) => ({
+        tag: 'column',
+        width: 'auto',
+        elements: [
+          {
+            tag: 'button',
+            text: { tag: 'plain_text', content: option.label },
+            type: 'default',
+            behaviors: [{ type: 'callback', value: { r: reminderId, q: question.id, o: index } }],
+          },
+        ],
+      })),
+    });
+  }
+
+  const card: Card = {
+    schema: CARD_SCHEMA,
+    config: { update_multi: true },
+    header: { title: { tag: 'plain_text', content: `需要你回答（#${no}）` }, template: 'blue' },
+    body: { elements },
+  };
+  // 选项描述会把卡片撑大：装不下就抛给调用方退回文字，别发出半张卡。
+  if (!cardFits(card)) throw new RangeError('提问卡片超过体积上限');
+  return card;
+}
+
+/** 终态卡：保留题干，附上「谁答了/为什么失效」，不再留可点的按钮。 */
+export function renderReminderClosedCard(input: { no: number; question: AskQuestion; outcome: string }): Card {
+  return {
+    schema: CARD_SCHEMA,
+    config: { update_multi: true },
+    header: { title: { tag: 'plain_text', content: `需要你回答（#${input.no}）` }, template: 'grey' },
+    body: {
+      elements: [
+        stemOf(input.question),
+        { tag: 'markdown', content: `_${input.outcome}_`, text_size: 'notation' },
+      ],
+    },
+  };
+}
+
+function stemOf(question: AskQuestion): Record<string, unknown> {
+  const lines = [`**${question.header ?? '需要你回答'}**`, question.question];
+  if (question.detail !== undefined && question.detail !== '') lines.push('', question.detail);
+  return { tag: 'markdown', content: lines.join('\n'), text_size: 'normal' };
+}
+
+/**
+ * 卡片回调 → 作答。
+ *
+ * 与核心桥的约定一致：单选看 `value.o`（下标），多选的 `option` 可能是下标数组、
+ * 逗号串或选项文案，三种都认；认不出就返回 null，让调用方当作「不是这条提醒的作答」。
+ */
+export function answerFromCard(
+  question: AskQuestion,
+  value: Record<string, unknown>,
+  option: unknown,
+): { id: string; selected: string[] } | null {
+  const options = question.options ?? [];
+  const labelsOf = (raw: unknown): string[] | undefined => {
+    const indices = toIndexList(raw);
+    if (indices === undefined) return undefined;
+    const labels = indices
+      .map((index) => options[index]?.label)
+      .filter((label): label is string => label !== undefined && label !== '');
+    return labels.length === 0 ? undefined : [...new Set(labels)];
+  };
+
+  if (value.o !== undefined) {
+    const single = labelsOf([value.o]);
+    return single === undefined ? null : { id: question.id, selected: single };
+  }
+
+  const multi = labelsOf(option);
+  if (multi !== undefined) return { id: question.id, selected: multi };
+
+  // 有些客户端直接把选项文案回传，认文案兜底。
+  const texts = toTextList(option).filter((text) => options.some((item) => item.label === text));
+  return texts.length === 0 ? null : { id: question.id, selected: [...new Set(texts)] };
+}
+
+/** 单选下标、多选下标数组、`"0,2"`、`"0%2C2"` 都收敛成下标数组。 */
+function toIndexList(raw: unknown): number[] | undefined {
+  if (Array.isArray(raw)) return indicesOf(raw);
+  if (typeof raw === 'string') return indicesOf(raw.replace(/%2C/giu, ',').split(','));
+  return indicesOf([raw]);
+}
+
+function indicesOf(items: readonly unknown[]): number[] | undefined {
+  const indices: number[] = [];
+  for (const item of items) {
+    if (typeof item === 'number' && Number.isInteger(item)) {
+      indices.push(item);
+      continue;
+    }
+    if (typeof item === 'string' && /^\d+$/u.test(item.trim())) {
+      indices.push(Number(item.trim()));
+      continue;
+    }
+    return undefined;
+  }
+  return indices.length === 0 ? undefined : indices;
+}
+
+function toTextList(raw: unknown): string[] {
+  if (Array.isArray(raw)) return raw.filter((item): item is string => typeof item === 'string');
+  if (typeof raw === 'string') return raw.split(/[,，、]+/u).map((item) => item.trim()).filter(Boolean);
+  return [];
+}

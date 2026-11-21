@@ -12,7 +12,7 @@
 import { MAX_FILE_BYTES, MAX_FILES_BYTES, MAX_IMAGE_BYTES, OWNER_FILES_MAX, OWNER_IMAGES_MAX } from '../shared/limits.ts';
 import type { LarkApi } from './lark/api.ts';
 import type { LarkLogger } from './lark/connection.ts';
-import type { LarkInboundMessage } from './lark/types.ts';
+import type { LarkCardAction, LarkInboundMessage } from './lark/types.ts';
 import type { InboundBody, InboundFileRef, InboundImageRef } from './inbound.ts';
 import { parseCardAction, parseMessageEvent } from './inbound.ts';
 import type { LarkBridge } from './bridge.ts';
@@ -56,6 +56,11 @@ export interface InboundPipelineOptions {
    * 只对纯文本生效（带媒体/文件的草稿不当作答）。
    */
   claim?: (draft: OwnerMessageDraft) => boolean;
+  /**
+   * 先给提醒认领卡片回调：独立模式的提问卡不是核心交付，核心桥认不出来。
+   * 返回 true 表示已消化，不再交给桥。
+   */
+  claimCard?: (action: LarkCardAction) => boolean | Promise<boolean>;
   /** 没有核心时的去处（独立模式）。 */
   fallback?: (message: LarkInboundMessage, draft: OwnerMessageDraft) => Promise<void>;
 }
@@ -73,6 +78,7 @@ export class InboundPipeline {
   readonly #onOwner: ((sender: string, chatId: string, chatType: 'p2p' | 'group') => void) | undefined;
   readonly #now: () => number;
   readonly #claim: InboundPipelineOptions['claim'];
+  readonly #claimCard: InboundPipelineOptions['claimCard'];
   readonly #fallback: InboundPipelineOptions['fallback'];
   #chain: Promise<void> = Promise.resolve();
 
@@ -89,6 +95,7 @@ export class InboundPipeline {
     this.#onOwner = options.onOwner;
     this.#now = options.now ?? Date.now;
     this.#claim = options.claim;
+    this.#claimCard = options.claimCard;
     this.#fallback = options.fallback;
   }
 
@@ -147,6 +154,7 @@ export class InboundPipeline {
 
     this.#enqueue(async () => {
       try {
+        if ((await this.#claimCard?.(action)) === true) return;
         const result = await this.#bridge.applyCardAction(action);
         if (!result.accepted && result.reason !== 'settled') {
           this.#logger.debug?.('卡片作答未被接受', `${result.reason} ${result.detail ?? ''}`);

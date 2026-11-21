@@ -181,6 +181,8 @@ export async function apply(ctx: PluginContext, config: PluginConfig | unknown =
         (draft.images?.length ?? 0) === 0 &&
         (draft.files?.length ?? 0) === 0 &&
         reminders.reply(draft.text),
+      // 独立模式的提问卡不是核心交付：先给提醒认领，认不出再交给桥。
+      claimCard: (action) => !coreEnabled() && reminders.applyCardAction(action),
       ownerLabel: () => tailOf(app.appId),
       health: () => bridgeHealth(runtime.status().connection.state),
     });
@@ -234,6 +236,10 @@ export async function apply(ctx: PluginContext, config: PluginConfig | unknown =
    */
   const reminders = new ReminderCenter({
     send: async (text) => (stack === null ? false : stack.notify(text)),
+    sendCard: async (card) => (stack === null ? null : stack.sendCard(card)),
+    patchCard: async (messageId, card) => {
+      if (stack !== null) await stack.patchCard(messageId, card);
+    },
     recipient: () => owners.peek()?.openId ?? null,
     isActive: () => !coreEnabled() && runtime.active && stack !== null,
     enabled: normalized.questionReminders,

@@ -17,6 +17,8 @@ import { createSdkClient } from './lark/sdk.ts';
 import type { LarkCredentials } from './lark/types.ts';
 import { OutboundChannel } from './outbound.ts';
 import type { BridgeHealth, OwnerMessageDraft } from './protocol.ts';
+import type { Card } from './cards.ts';
+import type { LarkCardAction } from './lark/types.ts';
 import type { LarkEventSink } from './runtime.ts';
 import { StandaloneChat } from './standalone.ts';
 import type { StandaloneController } from './standalone.ts';
@@ -46,6 +48,8 @@ export interface LarkStackOptions {
    * 没有提醒在等时恒为 false。
    */
   claim?: (draft: OwnerMessageDraft) => boolean;
+  /** 卡片回调先给提醒认领：独立模式的提问卡不是核心交付。 */
+  claimCard?: (action: LarkCardAction) => boolean | Promise<boolean>;
   ownerLabel?: () => string;
   /** 长连接健康度：断线时让核心别继续排队。 */
   health?: () => BridgeHealth;
@@ -65,6 +69,10 @@ export interface LarkStack {
   readonly sink: LarkEventSink;
   /** 主动给主人发一条纯文本（提醒用）；没有主人或发送失败时返回 false。 */
   notify(text: string): Promise<boolean>;
+  /** 主动给主人发一张可作答的卡片；没有主人或发送失败时返回 null。 */
+  sendCard(card: Card): Promise<string | null>;
+  /** 把已发出的卡片改成终态；失败由调用方决定吞掉还是记日志。 */
+  patchCard(messageId: string, card: Card): Promise<void>;
   dispose(): void;
 }
 
@@ -118,6 +126,7 @@ export function createLarkStack(options: LarkStackOptions): LarkStack {
     ...(options.isOwner === undefined ? {} : { isOwner: options.isOwner }),
     ...(options.onOwner === undefined ? {} : { onOwner: options.onOwner }),
     ...(options.claim === undefined ? {} : { claim: options.claim }),
+    ...(options.claimCard === undefined ? {} : { claimCard: options.claimCard }),
     ...(options.now === undefined ? {} : { now: options.now }),
     fallback: (message, draft) => standalone.handleInbound(message, draft),
   });
@@ -139,6 +148,20 @@ export function createLarkStack(options: LarkStackOptions): LarkStack {
     return receipt.errorCode === undefined;
   };
 
+  let cardSequence = 0;
+  const sendCard = async (card: Card): Promise<string | null> => {
+    const owner = options.owners.peek();
+    if (owner === null || owner.chatId === '') return null;
+    const receipt = await standaloneOutbound.deliver({
+      deliveryId: `reminder-card-${now()}-${(cardSequence += 1)}`,
+      chatId: owner.chatId,
+      text: '',
+      card,
+    });
+    if (receipt.errorCode !== undefined) return null;
+    return receipt.messageIds[0] ?? null;
+  };
+
   return {
     app,
     api,
@@ -147,6 +170,10 @@ export function createLarkStack(options: LarkStackOptions): LarkStack {
     standalone,
     sink,
     notify,
+    sendCard,
+    patchCard: async (messageId, card) => {
+      await api.patchCard({ messageId, card });
+    },
     dispose: () => {
       bridge.dispose();
       void pipeline.drain();
