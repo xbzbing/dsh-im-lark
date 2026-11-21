@@ -1,13 +1,14 @@
 /**
- * 扫码创建应用的面板块：入口按钮、二维码/链接、过期提示与取消。
+ * 扫码创建应用：凭据卡片里的入口行，以及点开后的授权对话框。
  *
  * 二维码在 host 端编码成模块矩阵，这里只负责画 SVG：白底 + 深色方块，保留
- * 4 个模块的静区。链接始终同时给出，扫码失败时还能复制到手机打开。
+ * 4 个模块的静区。授权链接不在界面上显示，只在「在飞书中打开」时交给浏览器；
+ * 手机上直接用飞书扫码即可。
  */
 
 import type { Translate } from './locales.ts';
 import { h } from './platform.ts';
-import { Button } from './ui.ts';
+import { Button, Modal } from './ui.ts';
 
 export interface QrMatrix {
   size: number;
@@ -24,67 +25,104 @@ export interface RegistrationSnapshot {
   qr?: QrMatrix | null;
 }
 
-interface RegisterProps {
-  registration: RegistrationSnapshot | null;
+interface EntryProps {
   busy: string;
   t: Translate;
-  onStart(): void;
-  onCancel(): void;
-  onCopy(): void;
+  onOpen(): void;
 }
 
-export function RegisterSection(props: RegisterProps) {
-  const { registration, busy, t } = props;
-  const waiting = registration?.state === 'waiting';
-
+/** 凭据卡片右栏：扫码创建入口，点开才发起授权。 */
+export function RegisterEntry(props: EntryProps) {
   return h(
     'div',
     { className: 'lark-register' },
+    h('div', { className: 'lark-register-title' }, props.t('register.scan')),
+    h('div', { className: 'lark-card-hint' }, props.t('register.scanHint')),
     h(
       'div',
-      { className: 'lark-register-head' },
-      h('div', { className: 'lark-register-title' }, t('register.scan')),
-      h(
-        'div',
-        { className: 'lark-actions' },
-        waiting
-          ? h(Button, { onClick: props.onCancel, disabled: busy !== '' }, busy === 'register-cancel' ? t('register.cancelling') : t('register.cancel'))
-          : h(Button, { onClick: props.onStart, disabled: busy !== '', 'data-primary': 'true' }, busy === 'register' ? t('register.starting') : t('register.scan')),
-      ),
+      { className: 'lark-register-action' },
+      h(Button, { variant: 'outline', onClick: props.onOpen, disabled: props.busy !== '' }, props.t('register.entryAction')),
     ),
-    waiting && registration.url !== null
-      ? h(WaitingPanel, { registration, t, onCopy: props.onCopy })
-      : h('div', { className: 'lark-card-hint' }, t('register.scanHint')),
   );
 }
 
-function WaitingPanel(props: { registration: RegistrationSnapshot; t: Translate; onCopy(): void }) {
+interface DialogProps {
+  open: boolean;
+  registration: RegistrationSnapshot | null;
+  busy: string;
+  t: Translate;
+  onClose(): void;
+  onCancel(): void;
+  onRetry(): void;
+}
+
+export function RegisterDialog(props: DialogProps) {
   const { registration, t } = props;
-  const minutes =
-    registration.expiresAt === null ? 10 : Math.max(1, Math.ceil((registration.expiresAt - Date.now()) / 60_000));
+  const waiting = registration?.state === 'waiting';
+  const failed = registration?.state === 'error';
 
   return h(
-    'div',
-    { className: 'lark-register-body' },
-    registration.qr === undefined || registration.qr === null
-      ? null
-      : h(QrCode, { qr: registration.qr, label: t('register.waiting') }),
-    h(
+    Modal,
+    {
+      open: props.open,
+      onClose: props.onClose,
+      closeLabel: t('register.close'),
+      title: t('register.scan'),
+      footer: h(
+        'div',
+        { className: 'lark-modal-actions' },
+        ...(waiting
+          ? [
+              h(
+                Button,
+                { variant: 'outline', onClick: props.onCancel, disabled: props.busy !== '' },
+                props.busy === 'register-cancel' ? t('register.cancelling') : t('register.cancel'),
+              ),
+              h(Button, { variant: 'primary', onClick: () => openInFeishu(registration?.url ?? null) }, t('register.open')),
+            ]
+          : failed
+            ? [
+                h(Button, { variant: 'outline', onClick: props.onClose }, t('register.close')),
+                h(Button, { variant: 'primary', onClick: props.onRetry }, t('register.retry')),
+              ]
+            : [h(Button, { variant: 'outline', onClick: props.onClose }, t('register.close'))]),
+      ),
+    },
+    h(RegisterBody, { registration, t }),
+  );
+}
+
+function RegisterBody(props: { registration: RegistrationSnapshot | null; t: Translate }) {
+  const { registration, t } = props;
+  if (registration?.state === 'waiting' && registration.qr) {
+    const minutes = registration.expiresAt === null ? 10 : Math.max(1, Math.ceil((registration.expiresAt - Date.now()) / 60_000));
+    return h(
       'div',
-      { className: 'lark-register-info' },
-      h('div', { className: 'lark-register-waiting' }, t('register.waiting')),
-      h('div', { className: 'lark-card-hint' }, t('register.waitingHint')),
-      h('div', { className: 'lark-card-hint' }, t('register.expires', { minutes })),
-      h('div', { className: 'lark-register-link' }, h('a', { href: registration.url ?? '', target: '_blank', rel: 'noreferrer' }, registration.url)),
+      { className: 'lark-register-modal' },
+      h(QrCode, { qr: registration.qr, label: t('register.waiting') }),
       h(
         'div',
-        { className: 'lark-actions' },
-        h('a', { className: 'lark-btn', href: registration.url ?? '', target: '_blank', rel: 'noreferrer' }, t('register.open')),
-        h(Button, { onClick: props.onCopy }, t('register.copy')),
+        { className: 'lark-register-info' },
+        h('div', { className: 'lark-register-waiting' }, t('register.waiting')),
+        h('div', { className: 'lark-card-hint' }, t('register.waitingHint')),
+        h('div', { className: 'lark-card-hint' }, t('register.expires', { minutes })),
+        h('div', { className: 'lark-card-hint' }, t('register.qrHint')),
       ),
-      h('div', { className: 'lark-card-hint' }, t('register.qrHint')),
-    ),
-  );
+    );
+  }
+  if (registration?.state === 'error') {
+    return h('div', { className: 'lark-card-hint' }, registration.error ?? t('register.failed'));
+  }
+  if (registration?.state === 'done') {
+    return h('div', { className: 'lark-card-hint' }, t('register.done', { appId: registration.appIdTail ?? '' }));
+  }
+  return h('div', { className: 'lark-card-hint' }, t('register.starting'));
+}
+
+/** 同机装了飞书时可以直接唤起；手机上还是扫码。 */
+function openInFeishu(url: string | null): void {
+  if (url === null || url === '' || typeof window === 'undefined') return;
+  window.open(url, '_blank', 'noopener,noreferrer');
 }
 
 /** 模块矩阵 → SVG path；一个模块一条 1×1 的矩形子路径。 */

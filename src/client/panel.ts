@@ -12,11 +12,11 @@ import iconUrl from '../../assets/icon.svg';
 import { ENDPOINTS, REFRESH_INTERVAL_MS, REGISTER_POLL_MS } from './constants.ts';
 import { dotOf, errorText, isContractMismatch } from './logic.ts';
 import type { Translate } from './locales.ts';
-import { h, useCallback, useEffect, useState } from './platform.ts';
-import { RegisterSection } from './register.ts';
+import { h, useCallback, useEffect, useRef, useState } from './platform.ts';
+import { RegisterDialog, RegisterEntry } from './register.ts';
 import type { RegistrationSnapshot } from './register.ts';
 import { ensureStyles } from './styles.ts';
-import { Button, IconRefresh, Input, Switch } from './ui.ts';
+import { Button, IconCheck, IconChevronDown, IconRefresh, Input, MenuSurface, Switch } from './ui.ts';
 
 interface Snapshot {
   contract: number;
@@ -55,6 +55,9 @@ export function LarkSettingsPanel(props: any) {
   const [appSecret, setAppSecret] = useState('');
   const [domain, setDomain] = useState('feishu');
   const [registration, setRegistration] = useState<RegistrationSnapshot | null>(null);
+  const [registerOpen, setRegisterOpen] = useState(false);
+  /** 对话框是否还开着：发起授权是异步的，关掉之后回来的结果要自己取消。 */
+  const registerOpenRef = useRef(false);
 
   const applySnapshot = useCallback((next: Snapshot) => {
     setSnapshot(next);
@@ -97,9 +100,13 @@ export function LarkSettingsPanel(props: any) {
   };
 
   const startRegistration = () => {
+    registerOpenRef.current = true;
+    setRegisterOpen(true);
     void run('register', async () => {
       const result = await rpcCall<{ registration: RegistrationSnapshot }>(ENDPOINTS.registerStart, { domain });
       setRegistration(result.registration);
+      // 生成期间对话框已被关掉：别把二维码留在 host 上等它过期。
+      if (!registerOpenRef.current) cancelRegistration();
     });
   };
 
@@ -110,17 +117,11 @@ export function LarkSettingsPanel(props: any) {
     });
   };
 
-  const copyRegistrationLink = () => {
-    const url = registration?.url;
-    if (url === null || url === undefined) return;
-    void (async () => {
-      try {
-        await navigator.clipboard.writeText(url);
-        setNotice(t('register.copied'));
-      } catch {
-        setError(t('error.generic'));
-      }
-    })();
+  /** 关对话框就结束这次授权：二维码不该在后台继续有效。 */
+  const closeRegistration = () => {
+    registerOpenRef.current = false;
+    setRegisterOpen(false);
+    if (registration?.state === 'waiting') cancelRegistration();
   };
 
   const registrationState = registration?.state;
@@ -137,6 +138,8 @@ export function LarkSettingsPanel(props: any) {
           current === null ? current : { ...current, ...result.registration, qr: result.registration.qr ?? current.qr },
         );
         if (result.registration.state === 'done') {
+          registerOpenRef.current = false;
+          setRegisterOpen(false);
           setNotice(t('register.done', { appId: result.registration.appIdTail ?? '' }));
           await refresh(true);
         } else if (result.registration.state === 'error') {
@@ -242,7 +245,7 @@ export function LarkSettingsPanel(props: any) {
         'div',
         { className: 'lark-actions', style: { marginLeft: 'auto' } },
         h(Pill, { tone: toneOf(state), dot: true }, t(stateKey(state))),
-        h(Button, { onClick: () => void refresh(), disabled: busy !== '', title: t('panel.refresh') }, h(IconRefresh, null)),
+        h(Button, { variant: 'ghost', onClick: () => void refresh(), disabled: busy !== '', title: t('panel.refresh') }, h(IconRefresh, null)),
       ),
     ),
 
@@ -260,6 +263,7 @@ export function LarkSettingsPanel(props: any) {
         h(
           Button,
           {
+            variant: 'outline',
             onClick: () => void run('reconnect', async () => rpcCall<Snapshot>(ENDPOINTS.reconnect)),
             disabled: busy !== '',
           },
@@ -293,60 +297,57 @@ export function LarkSettingsPanel(props: any) {
       { className: 'lark-card' },
       h('div', { className: 'lark-card-title' }, t('credentials.title')),
       h('div', { className: 'lark-card-hint' }, t('credentials.hint')),
-      h(RegisterSection, {
+      h(RegisterDialog, {
+        open: registerOpen,
         registration,
         busy,
         t,
-        onStart: startRegistration,
+        onClose: closeRegistration,
         onCancel: cancelRegistration,
-        onCopy: copyRegistrationLink,
+        onRetry: startRegistration,
       }),
-      h('div', { className: 'lark-divider' }, t('register.manual')),
       h(
         'div',
-        { className: 'lark-grid-2' },
-        field(
-          t('credentials.appId'),
-          h(Input, {
-            className: 'lark-input',
-            value: appId,
-            placeholder: 'cli_…',
-            spellCheck: false,
-            autoComplete: 'off',
-            onChange: (event: any) => setAppId(event.target.value),
-          }),
-        ),
-        field(
-          t('credentials.appSecret'),
-          h(Input, {
-            className: 'lark-input',
-            type: 'password',
-            value: appSecret,
-            placeholder: snapshot?.status.appIdTail === null ? '' : t('credentials.appSecretPlaceholder'),
-            autoComplete: 'new-password',
-            onChange: (event: any) => setAppSecret(event.target.value),
-          }),
-        ),
-      ),
-      field(
-        t('credentials.domain'),
+        { className: 'lark-credentials' },
         h(
-          'select',
-          {
-            className: 'lark-input',
-            value: domain,
-            onChange: (event: any) => setDomain(event.target.value),
-          },
-          h('option', { value: 'feishu' }, t('credentials.domainFeishu')),
-          h('option', { value: 'lark' }, t('credentials.domainLark')),
+          'div',
+          { className: 'lark-credentials-main' },
+          h('div', { className: 'lark-credentials-label' }, t('credentials.manual')),
+          fieldRow(
+            t('credentials.appId'),
+            h(Input, {
+              className: 'lark-input',
+              value: appId,
+              placeholder: 'cli_…',
+              spellCheck: false,
+              autoComplete: 'off',
+              onChange: (event: any) => setAppId(event.target.value),
+            }),
+          ),
+          fieldRow(
+            t('credentials.appSecret'),
+            h(Input, {
+              className: 'lark-input',
+              type: 'password',
+              value: appSecret,
+              placeholder: snapshot?.status.appIdTail === null ? '' : t('credentials.appSecretPlaceholder'),
+              autoComplete: 'new-password',
+              onChange: (event: any) => setAppSecret(event.target.value),
+            }),
+          ),
+          fieldRow(
+            t('credentials.domain'),
+            h(PlatformSelect, { value: domain, onChange: (next: string) => setDomain(next), t }),
+          ),
+          h(
+            'div',
+            { className: 'lark-actions' },
+            h(Button, { variant: 'primary', disabled: busySave, onClick: saveCredentials }, busy === 'credentials' ? t('credentials.saving') : t('credentials.save')),
+            h(Button, { variant: 'outline', disabled: busySave, onClick: probe }, busy === 'probe' ? t('credentials.probing') : t('credentials.probe')),
+            h(Button, { variant: 'outline', className: 'lark-danger', disabled: busySave || status?.appIdTail === null, onClick: clearCredentials }, t('credentials.clear')),
+          ),
         ),
-      ),
-      h(
-        'div',
-        { className: 'lark-actions' },
-        h(Button, { 'data-primary': 'true', disabled: busySave, onClick: saveCredentials }, busy === 'credentials' ? t('credentials.saving') : t('credentials.save')),
-        h(Button, { disabled: busySave, onClick: probe }, busy === 'probe' ? t('credentials.probing') : t('credentials.probe')),
-        h(Button, { 'data-danger': 'true', disabled: busySave || status?.appIdTail === null, onClick: clearCredentials }, t('credentials.clear')),
+        h(RegisterEntry, { busy, t, onOpen: startRegistration }),
       ),
     ),
 
@@ -372,8 +373,128 @@ function row(label: string, value: unknown) {
   return h('div', { className: 'lark-row' }, h('span', { className: 'lark-row-label' }, label), h('span', { className: 'lark-row-value' }, value));
 }
 
-function field(label: string, control: unknown) {
-  return h('label', { className: 'lark-field' }, h('span', { className: 'lark-field-label' }, label), control);
+/** 一行一个字段：label 定宽在左，控件吃满剩余宽度。 */
+function fieldRow(label: string, control: unknown) {
+  return h(
+    'div',
+    { className: 'lark-field-row' },
+    h('span', { className: 'lark-field-row-label' }, label),
+    h('div', { className: 'lark-field-row-control' }, control),
+  );
+}
+
+const DOMAIN_OPTIONS = ['feishu', 'lark'] as const;
+
+/** 平台选择：宿主 MenuSurface 浮层；取不到原语时退回原生 select。 */
+function PlatformSelect(props: { value: string; onChange(next: string): void; t: Translate }) {
+  const { value, onChange, t } = props;
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const [box, setBox] = useState<{ left: number; top: number; width: number } | null>(null);
+  const triggerRef = useRef<any>(null);
+  const menuRef = useRef<any>(null);
+
+  const labelOf = (domain: string) => t(domain === 'lark' ? 'credentials.domainLark' : 'credentials.domainFeishu');
+
+  const show = () => {
+    const rect = triggerRef.current?.getBoundingClientRect();
+    if (rect === undefined) return;
+    setBox({ left: rect.left, top: rect.bottom + 4, width: rect.width });
+    setActive(Math.max(0, (DOMAIN_OPTIONS as readonly string[]).indexOf(value)));
+    setOpen(true);
+  };
+
+  const pick = (domain: string) => {
+    setOpen(false);
+    onChange(domain);
+    triggerRef.current?.focus?.();
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: any) => {
+      if (triggerRef.current?.contains(event.target) === true) return;
+      if (menuRef.current?.contains(event.target) === true) return;
+      setOpen(false);
+    };
+    const onKeyDown = (event: any) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setOpen(false);
+        triggerRef.current?.focus?.();
+      } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        const step = event.key === 'ArrowDown' ? 1 : -1;
+        setActive((index) => (index + step + DOMAIN_OPTIONS.length) % DOMAIN_OPTIONS.length);
+      } else if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        const domain = DOMAIN_OPTIONS[active];
+        if (domain !== undefined) pick(domain);
+      } else if (event.key === 'Tab') {
+        setOpen(false);
+      }
+    };
+    document.addEventListener('pointerdown', onPointerDown, true);
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown, true);
+      document.removeEventListener('keydown', onKeyDown, true);
+    };
+  }, [open, active, value, onChange]);
+
+  if (MenuSurface === null) {
+    return h(
+      'select',
+      { className: 'lark-input', value, onChange: (event: any) => onChange(event.target.value) },
+      DOMAIN_OPTIONS.map((domain) => h('option', { key: domain, value: domain }, labelOf(domain))),
+    );
+  }
+
+  return h(
+    'div',
+    { className: 'lark-select' },
+    h(
+      'button',
+      {
+        ref: triggerRef,
+        type: 'button',
+        className: 'lark-input lark-select-trigger',
+        'aria-haspopup': 'listbox',
+        'aria-expanded': open,
+        onClick: () => (open ? setOpen(false) : show()),
+      },
+      h('span', { className: 'lark-select-value' }, labelOf(value)),
+      IconChevronDown === null ? null : h(IconChevronDown, { size: 14 }),
+    ),
+    open && box !== null
+      ? h(
+          MenuSurface,
+          {
+            ref: menuRef,
+            className: 'lark-select-menu',
+            role: 'listbox',
+            tabIndex: -1,
+            style: { position: 'fixed', left: `${box.left}px`, top: `${box.top}px`, width: `${box.width}px` },
+          },
+          DOMAIN_OPTIONS.map((domain, index) =>
+            h(
+              'div',
+              {
+                key: domain,
+                className: 'lark-select-option',
+                role: 'option',
+                'aria-selected': domain === value,
+                'data-active': index === active,
+                onPointerEnter: () => setActive(index),
+                onClick: () => pick(domain),
+              },
+              h('span', null, labelOf(domain)),
+              domain === value && IconCheck !== null ? h(IconCheck, { size: 14 }) : null,
+            ),
+          ),
+        )
+      : null,
+  );
 }
 
 function toggleRow(control: unknown, title: string, hint: string) {
