@@ -67,7 +67,7 @@ npm run typecheck && npm test && npm run build && npm run verify
 ## 发布
 
 - 发布只走 `.github/workflows/release.yml`（main 上 `package.json` 变更触发），不手工打 tag、不本地 `npm publish`（首次 bootstrap 见 ADR-0007）
-- 版本三处同步：`package.json`、`package-lock.json`、`src/shared/version.ts`；正文写 `docs/releases/v<版本>.md`，稳定版与预发布都要有
+- 版本三处同步：`package.json`、`package-lock.json`、`src/shared/version.ts`；正式版正文写 `docs/releases/v<版本>.md`，预发布不写文件（正文由 workflow 生成）
 - 预发布发 npm 频道标签（`stage` / `rc`），`latest` 只给正式版
 - 发布正文是中英双语，格式见 `.github/RELEASE_TEMPLATE.md`
 

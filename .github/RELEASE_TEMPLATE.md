@@ -4,7 +4,8 @@
 
 - Release 标题 = tag 名 = `v<package.json version>`；tag 由 workflow 打，**不要手工打 tag**（[ADR-0007](../docs/adr/0007-发布流程与版本通道.md)）。
 - 正文**必须中英双语**：中文段在前，`---` 分隔，英文段在后；两段一一对应，不是摘要。
-- 正文文件是 `docs/releases/v<version>.md`，随发版提交一起入库；workflow 校验它存在才发布，重跑时用文件覆盖页面（手工改网页会被下次重跑覆盖）。稳定版与预发布都要写。
+- 本模板只用于**正式版**：正文文件 `docs/releases/v<version>.md` 随发版提交一起入库，workflow 校验它存在才发布，重跑时用文件覆盖页面（手工改网页会被下次重跑覆盖）。
+- **预发布（stage / rc）不写正文文件**，入 `docs/releases/` 的只有正式版；预发布的 Release 正文由 `release.yml` 按版本号、频道标签与安装命令生成，要改文案就去改 workflow。
 - 两段都以 compare 链接收尾：`https://github.com/xbzbing/dsh-im-lark/compare/<PREV>...<TAG>`，`<PREV>` 是上一个正式版 tag（跳过 stage / rc）；首个版本没有对比链接，写「首个版本」/ "First release"。
 - 不要保留 GitHub 自动生成的 `## What's Changed` 段落。
 
@@ -19,13 +20,12 @@
 **验证**
 
 - 写**当次** `npm run check` 的真实输出：单测数、打包自洽检查结果。数字不得沿用上一版。
-- 公开 CI 跑不全一致性套件（私有核心装不到，`bridge.test.ts` 跳过），所以正文里的单测数按**本地全量**写，并注明一致性套件的状态。
+- 测试自包含（不依赖私有核心），公开 CI 跑的就是全量；正文里的单测数写当次 `npm run check` 的数字。
 - 再写 1–3 条最有判别力的回归：修了什么、哪条测试会在去掉修复后转红。
 
 **安装**
 
 - 正式版给两条：npm（`dsh-im-lark@<VERSION>`）+ 同版本 GitHub Release 附件。
-- 预发布没有 `latest`，npm 那条必须带频道标签（`dsh-im-lark@stage`）；附件那条照常给。
 - npm 那行**钉到本版的具体版本**：这一页讲本版怎么装，`@latest` 在下一版发布会指向别的产物，与 tag / 附件对不上。
 - 命令必须带 `--profile <profile>`，示例统一用 `web`。
 
@@ -33,7 +33,6 @@
 | --- | --- |
 | patch（修 bug / 文档） | 1–4 |
 | minor（新能力） | 5–10 |
-| stage / rc（占位或预览） | 1–3，只陈述范围与已知缺口 |
 
 ## 骨架
 
@@ -51,16 +50,13 @@
 # 正式版（npm）
 dsh plugin --profile web add dsh-im-lark@<VERSION>
 
-# 预发布：npm 上是频道标签，没有 latest
-dsh plugin --profile web add dsh-im-lark@stage
-
 # 同一版本的 GitHub Release 附件
 dsh plugin --profile web add https://github.com/xbzbing/dsh-im-lark/releases/download/<TAG>/dsh-im-lark-<VERSION>.tgz
 ```
 
 ## 验证
 
-- `npm run check` 全绿：typecheck + <N> 单测（含私有核心的一致性套件）+ 打包自洽（产物可由源码确定性重建、`files` 白名单、真实打包清单）
+- `npm run check` 全绿：typecheck + <N> 单测（测试自包含，与 CI 同一套）+ 打包自洽（产物可由源码确定性重建、`files` 白名单、真实打包清单）
 - <关键回归：修了什么；去掉该修复后哪条测试转红>
 
 [完整变更记录 <PREV>...<TAG>](https://github.com/xbzbing/dsh-im-lark/compare/<PREV>...<TAG>)
@@ -79,16 +75,13 @@ dsh plugin --profile web add https://github.com/xbzbing/dsh-im-lark/releases/dow
 # Stable (npm)
 dsh plugin --profile web add dsh-im-lark@<VERSION>
 
-# Prerelease: a dist-tag on npm, no latest
-dsh plugin --profile web add dsh-im-lark@stage
-
 # The same version as a GitHub Release asset
 dsh plugin --profile web add https://github.com/xbzbing/dsh-im-lark/releases/download/<TAG>/dsh-im-lark-<VERSION>.tgz
 ```
 
 ## Verification
 
-- `npm run check` green: typecheck + <N> unit tests (including the private-core conformance suite) + package self-check (artifacts reproducible from source, `files` allow-list, real packed manifest)
+- `npm run check` green: typecheck + <N> unit tests (self-contained, the same suite CI runs) + package self-check (artifacts reproducible from source, `files` allow-list, real packed manifest)
 - <key regression: what was fixed and which test turns red without it>
 
 [Full changelog <PREV>...<TAG>](https://github.com/xbzbing/dsh-im-lark/compare/<PREV>...<TAG>)
@@ -105,7 +98,7 @@ npm version <v> --no-git-tag-version
 #    它是刻意留的权威副本，由单测校验「与 package.json 一致」，漏改门禁直接红
 $EDITOR src/shared/version.ts
 
-# 3. 正文：稳定版与预发布都要写，和版本号一起提交
+# 3. 正文：正式版照模板写并和版本号一起提交；预发布跳过这一步（正文由 workflow 生成）
 $EDITOR docs/releases/v<v>.md
 git add package.json package-lock.json src/shared/version.ts docs/releases/v<v>.md
 git commit -m "chore: release v<v>"

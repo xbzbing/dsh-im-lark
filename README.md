@@ -175,9 +175,10 @@ docs/adr/            架构决策记录
 公开 CI 跑的就是同一套。
 
 发布由 `.github/workflows/release.yml` 在 main 上完成（[ADR-0007](docs/adr/0007-发布流程与版本通道.md)）：
-版本号三处同步（`package.json`、锁文件、`src/shared/version.ts`），正文写
-`docs/releases/v<版本>.md`，推 main 后自动打 tag、发 npm、建 Release。预发布进 npm 的
-频道标签（`stage` / `rc`），`latest` 只给正式版。
+版本号三处同步（`package.json`、锁文件、`src/shared/version.ts`），正式版正文写
+`docs/releases/v<版本>.md`；预发布不进 `docs/releases/`，Release 正文由 workflow 生成。
+推 main 后自动打 tag、发 npm、建 Release：预发布只进 npm 的频道标签（`stage` / `rc`），
+`latest` 只给正式版。
 
 ## 许可
 
