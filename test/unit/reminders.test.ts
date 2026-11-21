@@ -557,11 +557,12 @@ function noProvider(): Error {
 
 /** 从渲染出的卡片里取回提醒 id：单选在按钮 value，多选在下拉 value。 */
 function reminderOf(card: Record<string, any>): string {
-  const element = card.body.elements[1] as Record<string, any>;
-  const value = element.tag === 'form'
-    ? element.elements.at(-1).behaviors[0].value
-    : element.columns[0].elements[0].behaviors[0].value;
-  return value.r as string;
+  const elements = card.body.elements as Array<Record<string, any>>;
+  // 单选：每个勾选行自己带 value；多选：值在表单的提交按钮上。
+  const row = elements.find((element) => element.tag === 'checker' && element.behaviors !== undefined);
+  if (row !== undefined) return row.behaviors[0].value.r as string;
+  const form = elements.find((element) => element.tag === 'form');
+  return form!.elements.at(-1).behaviors[0].value.r as string;
 }
 
 test('问题提醒：单题选项发卡片而不是文字，卡片回调结算作答并改终态', async () => {

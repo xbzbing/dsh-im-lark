@@ -67,6 +67,13 @@ export function cardContent(card: unknown): string {
   return JSON.stringify(card);
 }
 
+function optionText(option: { label: string; description?: string }): Record<string, unknown> {
+  const content = option.description === undefined || option.description === ''
+    ? `**${option.label}**`
+    : `**${option.label}**\n${option.description}`;
+  return { tag: 'lark_md', content };
+}
+
 function customInput(): Record<string, unknown> {
   return {
     tag: 'input',
@@ -189,7 +196,7 @@ function renderQuestion(deliveryId: string, question: InteractionQuestion): unkn
           name: `answer_${index}`,
           checked: false,
           overall_checkable: false,
-          text: { tag: 'plain_text', content: option.label },
+          text: optionText(option),
         })),
         customInput(),
         submitButton({ d: deliveryId, q: question.id }),
@@ -198,29 +205,23 @@ function renderQuestion(deliveryId: string, question: InteractionQuestion): unkn
     return elements;
   }
 
-  // 单选用按钮：点一下就作答，不需要「提交」，少一次交互。
-  elements.push({
-    tag: 'column_set',
-    flex_mode: 'flow',
-    columns: options.map((option, index) => ({
-      tag: 'column',
-      width: 'auto',
-      elements: [
-        {
-          tag: 'button',
-          text: { tag: 'plain_text', content: option.label },
-          type: 'default',
-          behaviors: [{ type: 'callback', value: { d: deliveryId, q: question.id, o: index } }],
-        },
-      ],
+  // 单选：一行一个选项（飞书卡片没有原生单选框组），点整行就作答；
+  // 描述与文案一起展示；「其他」答案走表单提交。
+  elements.push(
+    ...options.map((option, index) => ({
+      tag: 'checker',
+      name: `answer_${index}`,
+      checked: false,
+      overall_checkable: true,
+      text: optionText(option),
+      behaviors: [{ type: 'callback', value: { d: deliveryId, q: question.id, o: index } }],
     })),
-  });
-  // 「其他」答案要提交表单，按钮带不了自由文本。
-  elements.push({
-    tag: 'form',
-    name: 'ask_form',
-    elements: [customInput(), submitButton({ d: deliveryId, q: question.id, c: 1 })],
-  });
+    {
+      tag: 'form',
+      name: 'ask_form',
+      elements: [customInput(), submitButton({ d: deliveryId, q: question.id, c: 1 })],
+    },
+  );
   return elements;
 }
 

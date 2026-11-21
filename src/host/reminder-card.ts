@@ -55,35 +55,30 @@ export function renderReminderCard(input: ReminderCardInput): Card {
           name: `answer_${index}`,
           checked: false,
           overall_checkable: false,
-          text: { tag: 'plain_text', content: option.label },
+          text: optionText(option),
         })),
         customInput(),
         submitButton({ r: reminderId, q: question.id }),
       ],
     });
   } else {
-    elements.push({
-      tag: 'column_set',
-      flex_mode: 'flow',
-      columns: options.map((option, index) => ({
-        tag: 'column',
-        width: 'auto',
-        elements: [
-          {
-            tag: 'button',
-            text: { tag: 'plain_text', content: option.label },
-            type: 'default',
-            behaviors: [{ type: 'callback', value: { r: reminderId, q: question.id, o: index } }],
-          },
-        ],
+    // 单选：一行一个选项（飞书卡片没有原生单选框组，用整行可点的选择行，
+    // 点一下就作答），描述与文案一起展示；「其他」走表单提交。
+    elements.push(
+      ...options.map((option, index) => ({
+        tag: 'checker',
+        name: `answer_${index}`,
+        checked: false,
+        overall_checkable: true,
+        text: optionText(option),
+        behaviors: [{ type: 'callback', value: { r: reminderId, q: question.id, o: index } }],
       })),
-    });
-    // 单选按钮点一下就作答；「其他」需要一个表单提交，不能靠按钮带值。
-    elements.push({
-      tag: 'form',
-      name: 'ask_form',
-      elements: [customInput(), submitButton({ r: reminderId, q: question.id, c: 1 })],
-    });
+      {
+        tag: 'form',
+        name: 'ask_form',
+        elements: [customInput(), submitButton({ r: reminderId, q: question.id, c: 1 })],
+      },
+    );
   }
 
   const card: Card = {
@@ -110,6 +105,13 @@ export function renderReminderClosedCard(input: { no: number; question: AskQuest
       ],
     },
   };
+}
+
+function optionText(option: { label: string; description?: string }): Record<string, unknown> {
+  const content = option.description === undefined || option.description === ''
+    ? `**${option.label}**`
+    : `**${option.label}**\n${option.description}`;
+  return { tag: 'lark_md', content };
 }
 
 function customInput(): Record<string, unknown> {

@@ -27,12 +27,17 @@ interface CardShape {
   body: { elements: Array<Record<string, unknown>> };
 }
 
-function buttonsOf(card: unknown): Array<{ text: { content: string }; behaviors: Array<{ value: Record<string, unknown> }> }> {
-  const shape = card as CardShape;
-  const columns = shape.body.elements.find((element) => element.tag === 'column_set') as
-    | { columns: Array<{ elements: Array<{ text: { content: string }; behaviors: Array<{ value: Record<string, unknown> }> }> }> }
-    | undefined;
-  return columns?.columns.map((column) => column.elements[0]!) ?? [];
+/** 卡片里的选择行：单选/多选都用 checker，可能直接挂在 body 或包在表单里。 */
+function checkersOf(card: unknown): Array<{
+  text: { content: string };
+  behaviors?: Array<{ value: Record<string, unknown> }>;
+}> {
+  const elements = (card as CardShape).body.elements;
+  const direct = elements.filter((element) => element.tag === 'checker');
+  const nested = elements
+    .filter((element) => element.tag === 'form')
+    .flatMap((element) => (element.elements as Array<Record<string, unknown>>).filter((child) => child.tag === 'checker'));
+  return [...direct, ...nested] as never;
 }
 
 test('卡片：Markdown 卡带标题与 update_multi（PATCH 的前提）', () => {
@@ -61,7 +66,7 @@ test('交付卡：标题、正文、详情、参考按顺序出现', () => {
   assert.match(markdown, /参考：\n- 会话一/);
 });
 
-test('交付卡：单选每题一个按钮，value 带交付、问题与序号', () => {
+test('交付卡：单选是一行一个选项，value 带交付、问题与序号', () => {
   const card = renderDeliveryCard(
     {
       ...DELIVERY,
@@ -70,10 +75,10 @@ test('交付卡：单选每题一个按钮，value 带交付、问题与序号',
     { interactive: true },
   );
 
-  const buttons = buttonsOf(card);
-  assert.equal(buttons.length, 2);
-  assert.deepEqual(buttons[0]!.behaviors[0]!.value, { d: 'dlv_1', q: 'q1', o: 0 });
-  assert.equal(buttons[1]!.text.content, '乙');
+  const rows = checkersOf(card);
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows[0]!.behaviors![0]!.value, { d: 'dlv_1', q: 'q1', o: 0 });
+  assert.match(rows[1]!.text.content, /乙/u);
 });
 
 test('交付卡：多选用 multi_select_static，值用序号避免文案里的逗号歧义', () => {
@@ -98,7 +103,7 @@ test('交付卡：多选用 multi_select_static，值用序号避免文案里的
     { name: string; text: { content: string } }
   >;
   assert.deepEqual(checkers.map((checker) => checker.name), ['answer_0', 'answer_1']);
-  assert.equal(checkers[0]!.text.content, '甲,乙');
+  assert.match(checkers[0]!.text.content, /甲,乙/u);
 
   // 没有提交按钮时勾完无处可点：按钮必须带 form_action_type=submit 并携带交付/问题 id。
   const submit = form.elements.find((element) => element.tag === 'button') as
@@ -120,7 +125,7 @@ test('交付卡：审批类不给按钮，只提示去 Web 端', () => {
     { interactive: true },
   ) as unknown as CardShape;
 
-  assert.equal(buttonsOf(card).length, 0);
+  assert.equal(checkersOf(card).length, 0);
   assert.match(JSON.stringify(card), /Web 端处理/);
 });
 
@@ -138,7 +143,7 @@ test('交付卡：多问题不在 IM 里拆答，给出 Web 端提示', () => {
     { interactive: true },
   );
 
-  assert.equal(buttonsOf(card).length, 0);
+  assert.equal(checkersOf(card).length, 0);
   assert.match(JSON.stringify(card), /第一题/);
   assert.match(JSON.stringify(card), /Web 端作答/);
 });
@@ -150,7 +155,7 @@ test('已作答卡：不再有按钮，附上选择结果', () => {
   };
   const card = renderAnsweredCard(delivery, [{ id: 'q1', selected: ['甲'] }]);
 
-  assert.equal(buttonsOf(card).length, 0);
+  assert.equal(checkersOf(card).length, 0);
   assert.match(JSON.stringify(card), /已作答/);
   assert.match(JSON.stringify(card), /问题：甲/);
 });

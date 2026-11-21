@@ -51,13 +51,15 @@ test('提问卡片：单选渲染成按钮，回调带提醒 id 与下标', () =
   assert.equal((card.header as Record<string, any>).title.content, '需要你回答（#2）');
   assert.match(element(card as Record<string, any>, 0).content, /选一个/u);
 
-  const columns = element(card as Record<string, any>, 1).columns as Array<Record<string, any>>;
-  assert.equal(columns.length, 3);
-  assert.deepEqual(columns[1]!.elements[0].behaviors[0].value, { r: 'lark-q-1', q: 'q1', o: 1 });
-  assert.equal(columns[2]!.elements[0].text.content, '丙');
+  // 单选是一行一个选项：点整行就答，描述跟在文案后面。
+  const rows = [1, 2, 3].map((index) => element(card as Record<string, any>, index));
+  assert.deepEqual(rows.map((row) => row.tag), ['checker', 'checker', 'checker']);
+  assert.deepEqual(rows[1]!.behaviors[0].value, { r: 'lark-q-1', q: 'q1', o: 1 });
+  assert.match(rows[2]!.text.content, /丙/u);
+  assert.match(rows[2]!.text.content, /第三个/u);
 
-  // 单选按钮点一下就答；「其他」放进一个只含输入框与提交按钮的表单。
-  const form = element(card as Record<string, any>, 2);
+  // 「其他」放进一个只含输入框与提交按钮的表单。
+  const form = element(card as Record<string, any>, 4);
   assert.equal(form.tag, 'form');
   assert.equal(form.elements[0].name, 'custom_input');
   assert.deepEqual(form.elements[1].behaviors[0].value, { r: 'lark-q-1', q: 'q1', c: 1 });
@@ -71,7 +73,7 @@ test('提问卡片：多选是每项一个勾选框，提交按钮带回提醒 i
   assert.equal(form.tag, 'form');
   const checkers = (form.elements as Array<Record<string, any>>).filter((item) => item.tag === 'checker');
   assert.deepEqual(checkers.map((item) => item.name), ['answer_0', 'answer_1', 'answer_2']);
-  assert.equal(checkers[2]!.text.content, '丙');
+  assert.match(checkers[2]!.text.content, /丙/u);
 
   const submit = (form.elements as Array<Record<string, any>>).at(-1)!;
   assert.equal(submit.tag, 'button');
