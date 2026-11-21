@@ -57,19 +57,20 @@ test('提问卡片：单选渲染成按钮，回调带提醒 id 与下标', () =
   assert.equal(columns[2]!.elements[0].text.content, '丙');
 });
 
-test('提问卡片：多选嵌在表单里，提交按钮带回提醒 id 与问题 id', () => {
+test('提问卡片：多选是每项一个勾选框，提交按钮带回提醒 id', () => {
   const question = questionOf({ options: OPTIONS, multiSelect: true });
   const card = renderReminderCard({ reminderId: 'lark-q-1', no: 1, question });
   const form = element(card as Record<string, any>, 1);
 
   assert.equal(form.tag, 'form');
-  const [select, submit] = form.elements as Array<Record<string, any>>;
-  assert.equal(select!.tag, 'multi_select_static');
-  assert.equal(select!.name, 'answer');
-  assert.deepEqual(select!.options.map((option: Record<string, any>) => option.value), ['0', '1', '2']);
-  assert.equal(submit!.tag, 'button');
-  assert.equal(submit!.form_action_type, 'submit');
-  assert.deepEqual(submit!.behaviors[0].value, { r: 'lark-q-1', q: 'q1' });
+  const checkers = (form.elements as Array<Record<string, any>>).filter((item) => item.tag === 'checker');
+  assert.deepEqual(checkers.map((item) => item.name), ['answer_0', 'answer_1', 'answer_2']);
+  assert.equal(checkers[2]!.text.content, '丙');
+
+  const submit = (form.elements as Array<Record<string, any>>).at(-1)!;
+  assert.equal(submit.tag, 'button');
+  assert.equal(submit.form_action_type, 'submit');
+  assert.deepEqual(submit.behaviors[0].value, { r: 'lark-q-1', q: 'q1' });
 });
 
 test('提问卡片：终态卡没有可点元素，只留题干与结论', () => {
@@ -88,7 +89,9 @@ test('卡片回调：单选下标、多选数组/逗号串/文案都能还原', 
 
   assert.deepEqual(answerFromCard(single, { o: 1 }, undefined), { id: 'q1', selected: ['乙'] });
   assert.deepEqual(answerFromCard(single, { o: '2' }, undefined), { id: 'q1', selected: ['丙'] });
-  // 表单提交：值在 form_value.answer 里。
+  // 表单提交（勾选框）：answer_<下标> 为 true 的项。
+  assert.deepEqual(answerFromCard(multi, {}, undefined, { answer_0: true, answer_2: true }), { id: 'q1', selected: ['甲', '丙'] });
+  // 下拉版遗留：form_value.answer 数组照样认。
   assert.deepEqual(answerFromCard(multi, {}, undefined, { answer: ['0', '2'] }), { id: 'q1', selected: ['甲', '丙'] });
   // 旧版 option：数组、逗号串、编码过的逗号串与文案都认。
   assert.deepEqual(answerFromCard(multi, {}, ['0', '2']), { id: 'q1', selected: ['甲', '丙'] });

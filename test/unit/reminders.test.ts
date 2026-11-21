@@ -98,10 +98,13 @@ test('提醒文本：计划审阅认批准词与继续规划，其余算修改�
   });
 });
 
-test('提醒文本：单题认任意文本，多题只认都落到选项的作答', () => {
+test('提醒文本：单题有选项要落到选项上，无选项认任意文本；多题每段都要对上', () => {
   const [first, second] = questionsOf();
+  const freeform = normalizeQuestions([{ id: 'q3', question: '说说看' }])[0]!;
 
-  assert.equal(looksLikeAnswer([first!], '随便聊聊'), true);
+  assert.equal(looksLikeAnswer([freeform], '随便聊聊'), true);
+  assert.equal(looksLikeAnswer([first!], '随便聊聊'), false);
+  assert.equal(looksLikeAnswer([first!], '2'), true);
   assert.equal(looksLikeAnswer([first!, second!], '1；2'), true);
   assert.equal(looksLikeAnswer([first!, second!], '1；随便聊聊'), false);
   assert.equal(looksLikeAnswer([first!, second!], '只有一个'), false);
@@ -556,7 +559,7 @@ function noProvider(): Error {
 function reminderOf(card: Record<string, any>): string {
   const element = card.body.elements[1] as Record<string, any>;
   const value = element.tag === 'form'
-    ? element.elements[1].behaviors[0].value
+    ? element.elements.at(-1).behaviors[0].value
     : element.columns[0].elements[0].behaviors[0].value;
   return value.r as string;
 }
@@ -630,7 +633,7 @@ test('问题提醒：多选卡的回调带回多项', async () => {
 
   const reminderId = reminderOf(cards[0]!);
   assert.equal(
-    broker.applyCardAction({ value: { r: reminderId, q: 'q1' }, formValues: { answer: ['0', '2'] } }),
+    broker.applyCardAction({ value: { r: reminderId, q: 'q1' }, formValues: { answer_0: true, answer_2: true } }),
     true,
   );
   assert.deepEqual(await pending, { answers: [{ id: 'q1', selected: ['甲', '丙'] }] });

@@ -162,18 +162,15 @@ function renderQuestion(deliveryId: string, question: InteractionQuestion): unkn
       tag: 'form',
       name: 'ask_form',
       elements: [
-        {
-          tag: 'multi_select_static',
-          name: 'answer',
-          type: 'default',
-          width: 'fill',
-          required: true,
-          placeholder: { tag: 'plain_text', content: '可多选，选完提交' },
-          options: options.map((option, index) => ({
-            text: { tag: 'plain_text', content: option.label },
-            value: String(index),
-          })),
-        },
+        // 每个选项一个勾选框（checker）：飞书卡片没有「多选框组」，下拉多选不像多选。
+        // 勾选值随表单提交走 form_value.answer_<下标>，按钮上带交付/问题 id。
+        ...options.map((option, index) => ({
+          tag: 'checker',
+          name: `answer_${index}`,
+          checked: false,
+          overall_checkable: false,
+          text: { tag: 'plain_text', content: option.label },
+        })),
         {
           tag: 'button',
           name: 'ask_submit',
@@ -345,7 +342,15 @@ function resolveSelection(
   if (typeof value.o === 'number') return fromIndices([value.o]);
   if (typeof value.o === 'string') return fromIndices([value.o]);
 
-  // 表单提交：多选的值在 `form_value.answer`（组件 name），不在 behaviors 里。
+  // 表单提交（勾选框）：`answer_<下标>: true`；下拉版是一个 `answer` 数组。
+  if (formValues !== undefined) {
+    const checked = Object.entries(formValues)
+      .filter(([key, value]) => /^answer_(\d+)$/u.test(key) && value === true)
+      .map(([key]) => Number(key.slice('answer_'.length)))
+      .filter((index) => options[index] !== undefined)
+      .sort((left, right) => left - right);
+    if (checked.length > 0) return checked.map((index) => options[index]!.label);
+  }
   const fromForm = formValues?.answer;
   if (fromForm !== undefined) {
     const labels = fromIndices(fromForm);

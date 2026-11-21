@@ -93,13 +93,12 @@ test('交付卡：多选用 multi_select_static，值用序号避免文案里的
   assert.ok(form !== undefined);
   assert.equal(form.name, 'ask_form');
 
-  const select = form.elements.find((element) => element.tag === 'multi_select_static') as
-    | { name: string; options: Array<{ value: string; text: { content: string } }> }
-    | undefined;
-  assert.ok(select !== undefined);
-  assert.equal(select.name, 'answer');
-  assert.deepEqual(select.options.map((option) => option.value), ['0', '1']);
-  assert.equal(select.options[0]!.text.content, '甲,乙');
+  // 每个选项一个勾选框，勾选值随表单提交（answer_<下标>），没有下拉多选。
+  const checkers = form.elements.filter((element) => element.tag === 'checker') as Array<
+    { name: string; text: { content: string } }
+  >;
+  assert.deepEqual(checkers.map((checker) => checker.name), ['answer_0', 'answer_1']);
+  assert.equal(checkers[0]!.text.content, '甲,乙');
 
   // 没有提交按钮时勾完无处可点：按钮必须带 form_action_type=submit 并携带交付/问题 id。
   const submit = form.elements.find((element) => element.tag === 'button') as
@@ -203,12 +202,19 @@ test('作答：多选接受数组、逗号串与单值', () => {
   }
 });
 
-test('作答：多选表单提交读 form_value.answer', () => {
+test('作答：多选勾选框提交读 form_value.answer_<下标>', () => {
   const multi: InteractionQuestion = { ...CHOICE, id: 'q2', multiSelect: true };
   const store = storeWith(multi);
-  const result = answerFromAction({ d: 'dlv_1', q: 'q2' }, undefined, { answer: ['1', '0'] }, 'ou', store, 0);
+  const result = answerFromAction(
+    { d: 'dlv_1', q: 'q2' },
+    undefined,
+    { answer_1: true, answer_0: true },
+    'ou',
+    store,
+    0,
+  );
   assert.ok(!('reason' in result));
-  assert.deepEqual(result.answers[0]!.selected, ['乙', '甲']);
+  assert.deepEqual(result.answers[0]!.selected, ['甲', '乙']);
 });
 
 test('作答：客户端回传文案时按文案兜底', () => {

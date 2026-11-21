@@ -49,18 +49,15 @@ export function renderReminderCard(input: ReminderCardInput): Card {
       tag: 'form',
       name: 'ask_form',
       elements: [
-        {
-          tag: 'multi_select_static',
-          name: 'answer',
-          type: 'default',
-          width: 'fill',
-          required: true,
-          placeholder: { tag: 'plain_text', content: '可多选，选完提交' },
-          options: options.map((option, index) => ({
-            text: { tag: 'plain_text', content: option.label },
-            value: String(index),
-          })),
-        },
+        // 每个选项一个勾选框（checker）：飞书卡片没有「多选框组」，下拉多选
+        // 也不像多选，所以用多行勾选框 + 提交按钮，值走 form_value.answer_<下标>。
+        ...options.map((option, index) => ({
+          tag: 'checker',
+          name: `answer_${index}`,
+          checked: false,
+          overall_checkable: false,
+          text: { tag: 'plain_text', content: option.label },
+        })),
         {
           tag: 'button',
           name: 'ask_submit',
@@ -149,13 +146,31 @@ export function answerFromCard(
     return single === undefined ? null : { id: question.id, selected: single };
   }
 
-  // 表单提交：多选值在 `form_value.answer`（组件 name），优先于旧版 option。
+  // 表单提交（勾选框）：`answer_<下标>: true`；下拉版则是一个 `answer` 数组。
+  const checked = checkedFromForm(formValues);
+  if (checked.length > 0) {
+    const labels = checked
+      .map((index) => options[index]?.label)
+      .filter((label): label is string => label !== undefined && label !== '');
+    if (labels.length > 0) return { id: question.id, selected: [...new Set(labels)] };
+  }
   const multi = labelsOf(formValues?.answer) ?? labelsOf(option);
   if (multi !== undefined) return { id: question.id, selected: multi };
 
   // 有些客户端直接把选项文案回传，认文案兜底。
   const texts = toTextList(option).filter((text) => options.some((item) => item.label === text));
   return texts.length === 0 ? null : { id: question.id, selected: [...new Set(texts)] };
+}
+
+/** 表单里勾选框的提交值：`answer_<下标>` 为 true 的按下标返回。 */
+function checkedFromForm(formValues: Record<string, unknown> | undefined): number[] {
+  if (formValues === undefined) return [];
+  const indices: number[] = [];
+  for (const [key, value] of Object.entries(formValues)) {
+    const match = /^answer_(\d+)$/u.exec(key);
+    if (match !== null && value === true) indices.push(Number(match[1]));
+  }
+  return indices.sort((left, right) => left - right);
 }
 
 /** 单选下标、多选下标数组、`"0,2"`、`"0%2C2"` 都收敛成下标数组。 */

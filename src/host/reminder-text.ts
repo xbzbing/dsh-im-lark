@@ -190,7 +190,14 @@ export type AnswerClaim = 'complete' | 'partial';
 export function classifyAnswer(questions: readonly AskQuestion[], text: string): AnswerClaim | null {
   const reply = text.trim();
   if (reply === '' || questions.length === 0) return null;
-  if (questions.length === 1) return 'complete';
+  if (questions.length === 1) {
+    const question = questions[0]!;
+    // 没有选项、或计划审阅：随便一句都算作答（自由输入/修改意见）。
+    if ((question.options?.length ?? 0) === 0 || question.intent?.kind === 'plan-review') return 'complete';
+    // 有选项就必须真的落在选项上：把「没有提交按钮」这类聊天吞成自定义答案，
+    // 会把宿主的单选题结束成一条无效作答（真机踩过）。
+    return resolvesToOption(question, reply) ? 'complete' : null;
+  }
 
   const segments = reply.split(SEGMENT_SPLIT).map((segment) => segment.trim()).filter(Boolean);
   if (segments.length !== questions.length) return null;
