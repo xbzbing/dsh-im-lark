@@ -64,7 +64,7 @@
   "behavior.typing": "处理状态表情",
   "behavior.typingHint": "收到消息先打 Typing，处理完换成 DONE。飞书没有官方输入状态接口。",
   "behavior.replyStatus": "回复末尾显示状态",
-  "behavior.replyStatusHint": "附加模型、推理等级与耗时；仅独立会话生效。",
+  "behavior.replyStatusHint": "附加模型、推理等级与耗时。",
   "common.save": "保存",
   "common.saved": "已保存",
   "common.minutes": "分钟",

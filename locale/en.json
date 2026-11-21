@@ -64,7 +64,7 @@
   "behavior.typing": "Working / done reaction",
   "behavior.typingHint": "Marks the message Typing while handling, then DONE when finished. Feishu has no official typing API.",
   "behavior.replyStatus": "Status line in replies",
-  "behavior.replyStatusHint": "Model, reasoning effort and duration; standalone sessions only.",
+  "behavior.replyStatusHint": "Model, reasoning effort and duration.",
   "common.save": "Save",
   "common.saved": "Saved",
   "common.minutes": "min",

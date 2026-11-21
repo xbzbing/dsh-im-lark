@@ -513,15 +513,11 @@ export function LarkSettingsPanel(props: any) {
       'section',
       { className: 'lark-card' },
       h('div', { className: 'lark-card-title' }, t('behavior.title')),
+      // 表情是平台层的回执，两种模式都打；回复状态行只在独立模式的回复里拼。
       toggleRow(
         h(Switch, { checked: settings?.typingIndicator === true, onChange: (value: boolean) => toggle('typingIndicator', value), label: t('behavior.typing') }),
         t('behavior.typing'),
         t('behavior.typingHint'),
-      ),
-      toggleRow(
-        h(Switch, { checked: settings?.replyStatus === true, onChange: (value: boolean) => toggle('replyStatus', value), label: t('behavior.replyStatus') }),
-        t('behavior.replyStatus'),
-        t('behavior.replyStatusHint'),
       ),
     ),
 
@@ -589,6 +585,17 @@ export function LarkSettingsPanel(props: any) {
                 workspaces?.available === false
                   ? workspaces.reason ?? t('direct.workspaceUnavailable')
                   : t('direct.workspaceHint'),
+              ),
+              // 状态行只在独立模式的回复里拼，核心模式下回复由核心发出。
+              toggleRow(
+                h(Switch, {
+                  checked: settings?.replyStatus === true,
+                  disabled: coreActive || busy !== '',
+                  onChange: (value: boolean) => toggle('replyStatus', value),
+                  label: t('behavior.replyStatus'),
+                }),
+                t('behavior.replyStatus'),
+                coreActive ? t('reminder.coreHint') : t('behavior.replyStatusHint'),
               ),
             ),
             h(
