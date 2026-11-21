@@ -27,6 +27,7 @@ export const STYLES = `
 .lark-hero-icon { width: 36px; height: 36px; flex: none; }
 .lark-hero-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .lark-hero-title { font-size: 16px; font-weight: 600; line-height: 24px; }
+.lark-version { margin-left: 8px; color: var(--dsw-alias-label-tertiary); font-size: 12px; font-weight: 400; letter-spacing: 0; vertical-align: middle; }
 .lark-hero-sub { color: var(--dsw-alias-label-tertiary); }
 
 .lark-card {

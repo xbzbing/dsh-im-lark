@@ -238,7 +238,12 @@ export function LarkSettingsPanel(props: any) {
       h(
         'div',
         { className: 'lark-hero-text' },
-        h('div', { className: 'lark-hero-title' }, t('panel.title')),
+        h(
+          'div',
+          { className: 'lark-hero-title' },
+          t('panel.title'),
+          snapshot === null ? null : h('span', { className: 'lark-version' }, `v${snapshot.pluginVersion}`),
+        ),
         h('div', { className: 'lark-hero-sub' }, t('panel.subtitle')),
       ),
       h(
