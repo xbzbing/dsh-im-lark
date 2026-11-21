@@ -20,6 +20,17 @@ import type { AcceptResult, OwnerFile, OwnerImage, OwnerMessageDraft } from './p
 import { SeenStore } from './state/seen.ts';
 
 const TEXT_MAX = 20_000;
+
+/**
+ * 消息上的处理状态标记，走官方「添加消息表情回复」接口的 `emoji_type`。
+ *
+ * - `Typing`：收到就开始处理；
+ * - `DONE`：处理完成，覆盖 `Typing`，让主人一眼看出这条已经答完了。
+ *
+ * 只有成功处理完才盖 `DONE`：失败时不该给出「已完成」的假信号。
+ */
+const REACTION_TYPING = 'Typing';
+const REACTION_DONE = 'DONE';
 const KNOWN_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 
 export interface InboundPipelineOptions {
@@ -159,13 +170,22 @@ export class InboundPipeline {
   }
 
   async #processMessage(message: LarkInboundMessage, body: InboundBody): Promise<void> {
-    const reactionId = this.#typing ? await this.#addTyping(message.messageId) : undefined;
+    const typingId = this.#typing ? await this.#addReaction(message.messageId, REACTION_TYPING) : undefined;
+    // 只有走到最后才算处理完：中途抛错时不盖 DONE。
+    let settled = false;
     try {
       const draft = await this.#toDraft(message, body);
-      if (draft === null) return;
+      if (draft === null) {
+        settled = true;
+        return;
+      }
 
       // 提醒的作答先于一切：主人回「批准」「2」时不该把它当聊天送进会话。
-      if (this.#claim?.(draft) === true) return;
+      const claimed = this.#claim?.(draft) === true;
+      if (claimed) {
+        settled = true;
+        return;
+      }
 
       const result: AcceptResult = await this.#bridge.receive(draft);
       if (!result.accepted && result.reason === 'unknown' && this.#fallback !== undefined) {
@@ -173,8 +193,29 @@ export class InboundPipeline {
       } else if (!result.accepted) {
         this.#logger.debug?.('消息未被核心接受', `${result.reason} ${result.detail ?? ''}`);
       }
+      settled = true;
     } finally {
-      if (reactionId !== undefined) await this.#removeTyping(message.messageId, reactionId);
+      if (typingId !== undefined) await this.#removeReaction(message.messageId, typingId);
+      if (settled && this.#typing) await this.#addReaction(message.messageId, REACTION_DONE);
+    }
+  }
+
+  /** 加一条表情回复；失败不外抛，输入状态与完成标记都是尽力而为。 */
+  async #addReaction(messageId: string, emojiType: string): Promise<string | undefined> {
+    try {
+      const result = await this.#api.addReaction({ messageId, emojiType });
+      return result.reactionId;
+    } catch (error) {
+      // 表情是否可用随租户配置变化，失败就当作没有这个标记。
+      return undefined;
+    }
+  }
+
+  async #removeReaction(messageId: string, reactionId: string): Promise<void> {
+    try {
+      await this.#api.removeReaction({ messageId, reactionId });
+    } catch {
+      // 移除失败不影响交付；消息上的表情会随消息留存。
     }
   }
 
@@ -275,23 +316,6 @@ export class InboundPipeline {
     return files;
   }
 
-  async #addTyping(messageId: string): Promise<string | undefined> {
-    try {
-      const result = await this.#api.addReaction({ messageId, emojiType: 'Typing' });
-      return result.reactionId;
-    } catch {
-      // 表情是否可用随租户配置变化，失败就当作没有输入状态。
-      return undefined;
-    }
-  }
-
-  async #removeTyping(messageId: string, reactionId: string): Promise<void> {
-    try {
-      await this.#api.removeReaction({ messageId, reactionId });
-    } catch {
-      // 移除失败不影响交付；消息上的表情会随消息留存。
-    }
-  }
 }
 
 /** 按文件头判断图片类型；平台给的 content-type 只作参考。 */

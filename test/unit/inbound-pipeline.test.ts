@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import { createLarkBridge } from '../../src/host/bridge.ts';
 import { InboundPipeline } from '../../src/host/inbound-pipeline.ts';
 import type { LarkApi } from '../../src/host/lark/api.ts';
+import type { LarkBridge } from '../../src/host/bridge.ts';
 import type { BridgeHandle, OwnerMessageDraft } from '../../src/host/protocol.ts';
 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
@@ -36,9 +37,9 @@ function setup(options: SetupOptions = {}) {
       patches.push(input.card);
     },
     async recallMessage() {},
-    async addReaction() {
-      reactions.push('Typing');
-      return { reactionId: 're_1' };
+    async addReaction({ emojiType }) {
+      reactions.push(emojiType);
+      return { reactionId: `re_${reactions.length}` };
     },
     async removeReaction({ reactionId }) {
       removed.push(reactionId);
@@ -176,13 +177,51 @@ test('流水线：非主人消息被忽略（不解析命令、不驱动会话�
   assert.equal(received.length, 0);
 });
 
-test('流水线：处理期间打 Typing 表情，处理完移除', async () => {
+test('流水线：收到先打 Typing，处理完撤掉并盖 DONE', async () => {
   const { pipeline, reactions, removed } = setup();
   pipeline.handleMessage(messageEvent({ text: '打个表情' }));
   await pipeline.drain();
 
+  assert.deepEqual(reactions, ['Typing', 'DONE']);
+  assert.deepEqual(removed, ['re_1']);
+});
+
+test('流水线：处理抛错时不盖 DONE，只撤掉 Typing', async () => {
+  const reactions: string[] = [];
+  const removed: string[] = [];
+  const pipeline = new InboundPipeline({
+    api: {
+      ...setup().api,
+      async addReaction({ emojiType }) {
+        reactions.push(emojiType);
+        return { reactionId: `re_${reactions.length}` };
+      },
+      async removeReaction({ reactionId }) {
+        removed.push(reactionId);
+      },
+    },
+    bridge: {
+      receive: async () => {
+        throw new Error('核心接收失败');
+      },
+    } as unknown as LarkBridge,
+    typing: true,
+  });
+
+  pipeline.handleMessage(messageEvent({ text: '会失败的' }));
+  await pipeline.drain();
+
   assert.deepEqual(reactions, ['Typing']);
   assert.deepEqual(removed, ['re_1']);
+});
+
+test('流水线：关掉输入状态时两种表情都不打', async () => {
+  const { pipeline, reactions, removed } = setup({ typing: false });
+  pipeline.handleMessage(messageEvent({ text: '不打表情' }));
+  await pipeline.drain();
+
+  assert.deepEqual(reactions, []);
+  assert.deepEqual(removed, []);
 });
 
 test('流水线：核心没声明 owner-images 时不下载图片，也不带字节', async () => {
