@@ -217,6 +217,25 @@ test('作答：多选勾选框提交读 form_value.answer_<下标>', () => {
   assert.deepEqual(result.answers[0]!.selected, ['甲', '乙']);
 });
 
+test('作答：表单里的「其他」输入落成 custom', () => {
+  const store = storeWith(CHOICE);
+  const single = answerFromAction({ d: 'dlv_1', q: 'q1', c: 1 }, undefined, { custom_input: '都不合适' }, 'ou', store, 0);
+  assert.ok(!('reason' in single));
+  assert.deepEqual(single.answers, [{ id: 'q1', selected: [], custom: '都不合适' }]);
+
+  const multi: InteractionQuestion = { ...CHOICE, id: 'q2', multiSelect: true };
+  const both = answerFromAction(
+    { d: 'dlv_1', q: 'q2' },
+    undefined,
+    { answer_0: true, custom_input: '补充一句' },
+    'ou',
+    storeWith(multi),
+    0,
+  );
+  assert.ok(!('reason' in both));
+  assert.deepEqual(both.answers, [{ id: 'q2', selected: ['甲'], custom: '补充一句' }]);
+});
+
 test('作答：客户端回传文案时按文案兜底', () => {
   const store = storeWith(CHOICE);
   const result = answerFromAction({ d: 'dlv_1', q: 'q1' }, '乙', undefined, 'ou', store, 0);

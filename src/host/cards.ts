@@ -67,6 +67,26 @@ export function cardContent(card: unknown): string {
   return JSON.stringify(card);
 }
 
+function customInput(): Record<string, unknown> {
+  return {
+    tag: 'input',
+    name: 'custom_input',
+    placeholder: { tag: 'plain_text', content: '其他答案（可选）：填写后点提交' },
+    width: 'fill',
+  };
+}
+
+function submitButton(value: Record<string, unknown>): Record<string, unknown> {
+  return {
+    tag: 'button',
+    name: 'ask_submit',
+    type: 'primary',
+    text: { tag: 'plain_text', content: '提交' },
+    form_action_type: 'submit',
+    behaviors: [{ type: 'callback', value }],
+  };
+}
+
 function headerOf(options: MarkdownCardOptions): Record<string, unknown> {
   if (options.title === undefined || options.title === '') return {};
   return {
@@ -171,14 +191,8 @@ function renderQuestion(deliveryId: string, question: InteractionQuestion): unkn
           overall_checkable: false,
           text: { tag: 'plain_text', content: option.label },
         })),
-        {
-          tag: 'button',
-          name: 'ask_submit',
-          type: 'primary',
-          text: { tag: 'plain_text', content: '提交' },
-          form_action_type: 'submit',
-          behaviors: [{ type: 'callback', value: { d: deliveryId, q: question.id } }],
-        },
+        customInput(),
+        submitButton({ d: deliveryId, q: question.id }),
       ],
     });
     return elements;
@@ -200,6 +214,12 @@ function renderQuestion(deliveryId: string, question: InteractionQuestion): unkn
         },
       ],
     })),
+  });
+  // 「其他」答案要提交表单，按钮带不了自由文本。
+  elements.push({
+    tag: 'form',
+    name: 'ask_form',
+    elements: [customInput(), submitButton({ d: deliveryId, q: question.id, c: 1 })],
   });
   return elements;
 }
@@ -319,7 +339,11 @@ export function answerFromAction(
   return {
     deliveryId,
     sender,
-    answers: [{ id: question.id, selected }],
+    answers: [{
+      id: question.id,
+      selected: selected.selected,
+      ...(selected.custom === undefined ? {} : { custom: selected.custom }),
+    }],
     at: now,
   };
 }
@@ -330,7 +354,7 @@ function resolveSelection(
   value: Record<string, unknown>,
   option: unknown,
   formValues: Record<string, unknown> | undefined,
-): string[] | undefined {
+): { selected: string[]; custom?: string } | undefined {
   const options = question.options ?? [];
   const fromIndices = (raw: unknown): string[] | undefined => {
     const indices = toIndexList(raw);
@@ -339,31 +363,46 @@ function resolveSelection(
     return labels.length === 0 ? undefined : labels;
   };
 
-  if (typeof value.o === 'number') return fromIndices([value.o]);
-  if (typeof value.o === 'string') return fromIndices([value.o]);
+  if (typeof value.o === 'number') return pick(fromIndices([value.o]));
+  if (typeof value.o === 'string') return pick(fromIndices([value.o]));
 
-  // 表单提交（勾选框）：`answer_<下标>: true`；下拉版是一个 `answer` 数组。
+  // 表单提交（勾选框 + 「其他」输入）：answer_<下标> 为 true，custom_input 为自由文本。
+  const custom = customOf(formValues);
   if (formValues !== undefined) {
     const checked = Object.entries(formValues)
       .filter(([key, value]) => /^answer_(\d+)$/u.test(key) && value === true)
       .map(([key]) => Number(key.slice('answer_'.length)))
       .filter((index) => options[index] !== undefined)
       .sort((left, right) => left - right);
-    if (checked.length > 0) return checked.map((index) => options[index]!.label);
+    if (checked.length > 0 || custom !== undefined) {
+      return { selected: checked.map((index) => options[index]!.label), ...(custom === undefined ? {} : { custom }) };
+    }
   }
   const fromForm = formValues?.answer;
   if (fromForm !== undefined) {
     const labels = fromIndices(fromForm);
-    if (labels !== undefined) return labels;
+    if (labels !== undefined) return pick(labels);
   }
 
   // 多选：数组优先；字符串可能是 "0,2"、"0%2C2" 或单个值。
   const multi = fromIndices(option);
-  if (multi !== undefined) return multi;
+  if (multi !== undefined) return pick(multi);
 
   // 有些客户端直接把选项文案回传，认文案兜底。
   const labels = toStringList(option).filter((text) => options.some((item) => item.label === text));
-  return labels.length === 0 ? undefined : labels;
+  return pick(labels.length === 0 ? undefined : labels);
+}
+
+function pick(selected: string[] | undefined): { selected: string[] } | undefined {
+  return selected === undefined ? undefined : { selected };
+}
+
+/** 表单里「其他」输入：空串当没填。 */
+function customOf(formValues: Record<string, unknown> | undefined): string | undefined {
+  const raw = formValues?.custom_input;
+  if (typeof raw !== 'string') return undefined;
+  const text = raw.trim();
+  return text === '' ? undefined : text;
 }
 
 function toIndexList(raw: unknown): number[] | undefined {

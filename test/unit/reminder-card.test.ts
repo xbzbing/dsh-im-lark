@@ -55,6 +55,12 @@ test('提问卡片：单选渲染成按钮，回调带提醒 id 与下标', () =
   assert.equal(columns.length, 3);
   assert.deepEqual(columns[1]!.elements[0].behaviors[0].value, { r: 'lark-q-1', q: 'q1', o: 1 });
   assert.equal(columns[2]!.elements[0].text.content, '丙');
+
+  // 单选按钮点一下就答；「其他」放进一个只含输入框与提交按钮的表单。
+  const form = element(card as Record<string, any>, 2);
+  assert.equal(form.tag, 'form');
+  assert.equal(form.elements[0].name, 'custom_input');
+  assert.deepEqual(form.elements[1].behaviors[0].value, { r: 'lark-q-1', q: 'q1', c: 1 });
 });
 
 test('提问卡片：多选是每项一个勾选框，提交按钮带回提醒 id', () => {
@@ -71,6 +77,10 @@ test('提问卡片：多选是每项一个勾选框，提交按钮带回提醒 i
   assert.equal(submit.tag, 'button');
   assert.equal(submit.form_action_type, 'submit');
   assert.deepEqual(submit.behaviors[0].value, { r: 'lark-q-1', q: 'q1' });
+
+  // 「其他」答案：表单里必须有输入框，否则自由输入没有通道。
+  const input = (form.elements as Array<Record<string, any>>).find((item) => item.tag === 'input')!;
+  assert.equal(input.name, 'custom_input');
 });
 
 test('提问卡片：终态卡没有可点元素，只留题干与结论', () => {
@@ -98,6 +108,27 @@ test('卡片回调：单选下标、多选数组/逗号串/文案都能还原', 
   assert.deepEqual(answerFromCard(multi, {}, '0,2'), { id: 'q1', selected: ['甲', '丙'] });
   assert.deepEqual(answerFromCard(multi, {}, '0%2C2'), { id: 'q1', selected: ['甲', '丙'] });
   assert.deepEqual(answerFromCard(multi, {}, ['甲', '丙']), { id: 'q1', selected: ['甲', '丙'] });
+});
+
+test('卡片回调：「其他」输入落成 custom', () => {
+  const single = questionOf({ options: OPTIONS });
+  const multi = questionOf({ options: OPTIONS, multiSelect: true });
+
+  assert.deepEqual(answerFromCard(single, { c: 1 }, undefined, { custom_input: ' 都不合适 ' }), {
+    id: 'q1',
+    selected: [],
+    custom: '都不合适',
+  });
+  assert.deepEqual(answerFromCard(multi, {}, undefined, { answer_0: true, custom_input: '补充一句' }), {
+    id: 'q1',
+    selected: ['甲'],
+    custom: '补充一句',
+  });
+  // 空输入当作没填。
+  assert.deepEqual(answerFromCard(multi, {}, undefined, { answer_2: true, custom_input: '   ' }), {
+    id: 'q1',
+    selected: ['丙'],
+  });
 });
 
 test('卡片回调：认不出的值不硬解成作答', () => {

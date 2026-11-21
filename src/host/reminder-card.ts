@@ -43,14 +43,13 @@ export function renderReminderCard(input: ReminderCardInput): Card {
   const options = question.options ?? [];
 
   if (question.multiSelect === true) {
-    // 下拉多选只能嵌在表单容器里，必须有 form_action_type=submit 的按钮；
-    // 选中值走回调的 `form_value.answer`，没有提交按钮时勾完无处可点。
+    // 每个选项一个勾选框（checker）：飞书卡片没有「多选框组」，下拉多选也不像
+    // 多选。勾选值与「其他」输入都随表单提交（form_value.answer_<下标> / custom_input），
+    // 必须有 form_action_type=submit 的按钮，否则勾完无处可点。
     elements.push({
       tag: 'form',
       name: 'ask_form',
       elements: [
-        // 每个选项一个勾选框（checker）：飞书卡片没有「多选框组」，下拉多选
-        // 也不像多选，所以用多行勾选框 + 提交按钮，值走 form_value.answer_<下标>。
         ...options.map((option, index) => ({
           tag: 'checker',
           name: `answer_${index}`,
@@ -58,14 +57,8 @@ export function renderReminderCard(input: ReminderCardInput): Card {
           overall_checkable: false,
           text: { tag: 'plain_text', content: option.label },
         })),
-        {
-          tag: 'button',
-          name: 'ask_submit',
-          type: 'primary',
-          text: { tag: 'plain_text', content: '提交' },
-          form_action_type: 'submit',
-          behaviors: [{ type: 'callback', value: { r: reminderId, q: question.id } }],
-        },
+        customInput(),
+        submitButton({ r: reminderId, q: question.id }),
       ],
     });
   } else {
@@ -84,6 +77,12 @@ export function renderReminderCard(input: ReminderCardInput): Card {
           },
         ],
       })),
+    });
+    // 单选按钮点一下就作答；「其他」需要一个表单提交，不能靠按钮带值。
+    elements.push({
+      tag: 'form',
+      name: 'ask_form',
+      elements: [customInput(), submitButton({ r: reminderId, q: question.id, c: 1 })],
     });
   }
 
@@ -113,6 +112,26 @@ export function renderReminderClosedCard(input: { no: number; question: AskQuest
   };
 }
 
+function customInput(): Record<string, unknown> {
+  return {
+    tag: 'input',
+    name: 'custom_input',
+    placeholder: { tag: 'plain_text', content: '其他答案（可选）：填写后点提交' },
+    width: 'fill',
+  };
+}
+
+function submitButton(value: Record<string, unknown>): Record<string, unknown> {
+  return {
+    tag: 'button',
+    name: 'ask_submit',
+    type: 'primary',
+    text: { tag: 'plain_text', content: '提交' },
+    form_action_type: 'submit',
+    behaviors: [{ type: 'callback', value }],
+  };
+}
+
 function stemOf(question: AskQuestion): Record<string, unknown> {
   const lines = [`**${question.header ?? '需要你回答'}**`, question.question];
   if (question.detail !== undefined && question.detail !== '') lines.push('', question.detail);
@@ -130,7 +149,7 @@ export function answerFromCard(
   value: Record<string, unknown>,
   option: unknown,
   formValues?: Record<string, unknown>,
-): { id: string; selected: string[] } | null {
+): { id: string; selected: string[]; custom?: string } | null {
   const options = question.options ?? [];
   const labelsOf = (raw: unknown): string[] | undefined => {
     const indices = toIndexList(raw);
@@ -146,20 +165,34 @@ export function answerFromCard(
     return single === undefined ? null : { id: question.id, selected: single };
   }
 
-  // 表单提交（勾选框）：`answer_<下标>: true`；下拉版则是一个 `answer` 数组。
+  // 表单提交：勾选框 `answer_<下标>: true`，「其他」答案在 `custom_input`。
+  const custom = customOf(formValues);
   const checked = checkedFromForm(formValues);
-  if (checked.length > 0) {
+  if (checked.length > 0 || custom !== undefined) {
     const labels = checked
       .map((index) => options[index]?.label)
       .filter((label): label is string => label !== undefined && label !== '');
-    if (labels.length > 0) return { id: question.id, selected: [...new Set(labels)] };
+    return {
+      id: question.id,
+      selected: [...new Set(labels)],
+      ...(custom === undefined ? {} : { custom }),
+    };
   }
+  // 下拉版遗留：`form_value.answer` 数组或 behaviors 的 option。
   const multi = labelsOf(formValues?.answer) ?? labelsOf(option);
   if (multi !== undefined) return { id: question.id, selected: multi };
 
   // 有些客户端直接把选项文案回传，认文案兜底。
   const texts = toTextList(option).filter((text) => options.some((item) => item.label === text));
   return texts.length === 0 ? null : { id: question.id, selected: [...new Set(texts)] };
+}
+
+/** 表单里的「其他」输入；空串当没填。 */
+export function customOf(formValues: Record<string, unknown> | undefined): string | undefined {
+  const raw = formValues?.custom_input;
+  if (typeof raw !== 'string') return undefined;
+  const text = raw.trim();
+  return text === '' ? undefined : text;
 }
 
 /** 表单里勾选框的提交值：`answer_<下标>` 为 true 的按下标返回。 */

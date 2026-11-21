@@ -187,7 +187,11 @@ export type AnswerClaim = 'complete' | 'partial';
  * `partial`：它仍然是「在答题」，提醒会回一句格式提示，而不是让这段话掉进会话——
  * 主人对着一条两题的提醒只回半句，模型没有上下文可对，只会给出更让人困惑的回答。
  */
-export function classifyAnswer(questions: readonly AskQuestion[], text: string): AnswerClaim | null {
+export function classifyAnswer(
+  questions: readonly AskQuestion[],
+  text: string,
+  options: { allowCustom?: boolean } = {},
+): AnswerClaim | null {
   const reply = text.trim();
   if (reply === '' || questions.length === 0) return null;
   if (questions.length === 1) {
@@ -195,7 +199,9 @@ export function classifyAnswer(questions: readonly AskQuestion[], text: string):
     // 没有选项、或计划审阅：随便一句都算作答（自由输入/修改意见）。
     if ((question.options?.length ?? 0) === 0 || question.intent?.kind === 'plan-review') return 'complete';
     // 有选项就必须真的落在选项上：把「没有提交按钮」这类聊天吞成自定义答案，
-    // 会把宿主的单选题结束成一条无效作答（真机踩过）。
+    // 会把宿主的单选题结束成一条无效作答（真机踩过）。卡片带「其他」输入时
+    // 不存在这条文字通道，只有文字提醒（卡片发失败/多题）才放开自定义。
+    if (options.allowCustom === true) return 'complete';
     return resolvesToOption(question, reply) ? 'complete' : null;
   }
 

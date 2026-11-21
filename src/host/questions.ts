@@ -270,7 +270,8 @@ export class QuestionBroker {
    */
   reply(text: string): boolean {
     for (const pending of this.#pending.newestFirst()) {
-      const claim = classifyAnswer(pending.questions, text);
+      // 文字提醒没有「其他」输入框：单题仍接受任意文本当自定义答案。
+      const claim = classifyAnswer(pending.questions, text, { allowCustom: pending.cardMessageId === undefined });
       if (claim === null) continue;
       if (claim === 'partial') {
         this.#noteGuidance(pending, text);

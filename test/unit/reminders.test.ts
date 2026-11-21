@@ -609,6 +609,50 @@ test('问题提醒：单题选项发卡片而不是文字，卡片回调结算�
   assert.equal(broker.snapshot().pending, 0);
 });
 
+test('问题提醒：卡片里的「其他」输入落成自定义答案', async () => {
+  const broker = new QuestionBroker({
+    send: async () => true,
+    sendCard: async () => 'om_card',
+    recipient: () => 'ou_owner',
+    isRoot: () => true,
+    delayMs: () => 0,
+  });
+
+  const pending = broker.handle(
+    { questions: [{ id: 'q1', question: '选一个', options: OPTIONS }] },
+    async () => {
+      throw noProvider();
+    },
+    true,
+  );
+  await tick();
+
+  assert.equal(broker.applyCardAction({ value: { r: 'lark-q-1', q: 'q1', c: 1 }, formValues: { custom_input: '别的方式' } }), true);
+  assert.deepEqual(await pending, { answers: [{ id: 'q1', selected: [], custom: '别的方式' }] });
+});
+
+test('问题提醒：文字提醒仍接受自由输入当自定义答案', async () => {
+  const broker = new QuestionBroker({
+    send: async () => true,
+    recipient: () => 'ou_owner',
+    isRoot: () => true,
+    delayMs: () => 0,
+  });
+
+  const pending = broker.handle(
+    { questions: [{ id: 'q1', question: '选一个', options: OPTIONS }] },
+    async () => {
+      throw noProvider();
+    },
+    true,
+  );
+  await tick();
+
+  // 没有卡片 → 文字通道，任意文本都算作答（落成 custom）。
+  assert.equal(broker.reply('都不合适'), true);
+  assert.deepEqual(await pending, { answers: [{ id: 'q1', selected: [], custom: '都不合适' }] });
+});
+
 test('问题提醒：多选卡的回调带回多项', async () => {
   const cards: Array<Record<string, any>> = [];
   const broker = new QuestionBroker({
