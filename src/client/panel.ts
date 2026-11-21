@@ -9,6 +9,7 @@
  */
 
 import iconUrl from '../../assets/icon.svg';
+import { ConfirmDialog } from './confirm.ts';
 import { ENDPOINTS, REFRESH_INTERVAL_MS, REGISTER_POLL_MS } from './constants.ts';
 import { dotOf, errorText, isContractMismatch } from './logic.ts';
 import type { Translate } from './locales.ts';
@@ -73,6 +74,8 @@ export function LarkSettingsPanel(props: any) {
   const [domain, setDomain] = useState('feishu');
   const [registration, setRegistration] = useState<RegistrationSnapshot | null>(null);
   const [registerOpen, setRegisterOpen] = useState(false);
+  /** 清除凭据的确认框：原生 confirm 是系统外观，和面板主题不一致。 */
+  const [clearOpen, setClearOpen] = useState(false);
   /** 对话框是否还开着：发起授权是异步的，关掉之后回来的结果要自己取消。 */
   const registerOpenRef = useRef(false);
   const [workspaces, setWorkspaces] = useState<WorkspaceCatalog | null>(null);
@@ -269,7 +272,12 @@ export function LarkSettingsPanel(props: any) {
   };
 
   const clearCredentials = () => {
-    if (typeof window !== 'undefined' && !window.confirm(`${t('credentials.clear')}?`)) return;
+    if (snapshot?.status.appIdTail === null || snapshot === null) return;
+    setClearOpen(true);
+  };
+
+  const confirmClearCredentials = () => {
+    setClearOpen(false);
     void run('clear', async () => rpcCall<Snapshot>(ENDPOINTS.clearCredentials), t('credentials.cleared'));
   };
 
@@ -370,6 +378,16 @@ export function LarkSettingsPanel(props: any) {
         onClose: closeRegistration,
         onCancel: cancelRegistration,
         onRetry: startRegistration,
+      }),
+      h(ConfirmDialog, {
+        open: clearOpen,
+        title: t('credentials.clearTitle'),
+        lines: [t('credentials.clearHint', { appId: status?.appIdTail ?? '' }), t('credentials.clearWarning')],
+        cancelLabel: t('common.cancel'),
+        confirmLabel: t('credentials.clearConfirm'),
+        closeLabel: t('common.close'),
+        onCancel: () => setClearOpen(false),
+        onConfirm: confirmClearCredentials,
       }),
       h(
         'div',

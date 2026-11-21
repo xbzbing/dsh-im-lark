@@ -142,6 +142,9 @@ export const STYLES = `
 .lark-register-modal .lark-card-hint { text-align: center; }
 .lark-qr { width: 216px; height: 216px; flex: none; border-radius: 12px; background: #fff; padding: 10px; box-shadow: 0 0 0 1px var(--dsw-alias-border-l2), 0 1px 2px rgba(0, 0, 0, .06); }
 .lark-modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.lark-confirm-copy { color: var(--dsw-alias-label-secondary); font-size: 14px; line-height: 22px; }
+.lark-confirm-copy p { margin: 0; }
+.lark-confirm-copy p + p { margin-top: 12px; }
 .lark-modal-fallback { position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, .4); }
 .lark-modal-fallback-panel { display: flex; flex-direction: column; gap: 12px; max-width: 440px; padding: 20px; border-radius: 12px; background: var(--dsw-alias-bg-layer-1, #fff); }
 

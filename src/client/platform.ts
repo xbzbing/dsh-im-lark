@@ -7,7 +7,7 @@
 
 import * as React from 'react';
 
-export const { useCallback, useEffect, useMemo, useRef, useState } = React;
+export const { Fragment, useCallback, useEffect, useMemo, useRef, useState } = React;
 
 export const h = React.createElement as unknown as (type: any, props?: any, ...children: any[]) => any;
 
