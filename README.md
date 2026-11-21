@@ -33,7 +33,9 @@
 
 ## 安装
 
-npm 上目前只有 **stage 频道**（`latest` 要等首个正式版）：
+npm 上目前只有 **stage 频道**。首个正式版发布前，`latest` 暂时也指向这个占位版（registry
+不接受删掉 `latest`），所以裸装拿到的是预发布；要盯频道请显式写 `@stage`，首个正式版会
+把 `latest` 覆盖过去。
 
 ```bash
 dsh plugin --profile web add dsh-im-lark@stage
