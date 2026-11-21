@@ -324,7 +324,8 @@ export class LarkConnection implements LarkConnectionPort {
 
     const timeout = new Promise<never>((_, reject) => {
       timeoutTimer = setTimeout(() => {
-        reject(new Error(`长连接握手超时（${timeoutMs}ms）`));
+        const live = client.getConnectionStatus?.()?.state ?? 'unknown';
+        reject(new Error(`长连接握手超时（${timeoutMs}ms，SDK 状态 ${live}）`));
       }, timeoutMs);
       if (typeof timeoutTimer === 'object' && 'unref' in timeoutTimer) timeoutTimer.unref();
     });

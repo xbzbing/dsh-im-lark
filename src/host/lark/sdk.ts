@@ -36,11 +36,22 @@ function sdk(): LarkSdk {
   return loaded;
 }
 
+/**
+ * WSClient 的 `domain` 要的是带 scheme 的地址（`https://open.feishu.cn`），不是插件
+ * 内部的抽象域（`'feishu' | 'lark'`）。传错时 SDK 在本地 `new URL()` 抛 `Invalid URL`，
+ * 既不触发 `onError`，状态也停在 `connecting`，只能等握手超时——症状和网络不通一样。
+ */
+export function normalizeWsParams(params: Record<string, unknown>): Record<string, unknown> {
+  const domain = params.domain;
+  if (domain === 'feishu' || domain === 'lark') return { ...params, domain: sdkDomainOf(domain) };
+  return params;
+}
+
 /** 建 WSClient 的工厂。参数形状由 `LarkConnection` 传入（已收窄）。 */
 function createWsClient(params: Record<string, unknown>): WsClientLike {
   const Lark = sdk();
   return new Lark.WSClient(
-    params as unknown as ConstructorParameters<typeof Lark.WSClient>[0],
+    normalizeWsParams(params) as unknown as ConstructorParameters<typeof Lark.WSClient>[0],
   ) as unknown as WsClientLike;
 }
 
