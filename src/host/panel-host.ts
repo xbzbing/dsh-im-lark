@@ -13,10 +13,13 @@
  */
 
 import { PANEL_CONTRACT, PLUGIN_VERSION, RPC_CHANNEL, RPC_ENDPOINT, RPC_PREFIX } from '../shared/version.ts';
+import { normalizeQuestionDelayMinutes } from './config.ts';
 import type { LocalConfigStore, NormalizedConfig } from './config.ts';
 import { errorDetail, injectOptional } from './host-context.ts';
 import type { ConnectionLike, PluginContext, PluginLogger, RpcResult } from './host-context.ts';
+import type { ReminderCenter } from './reminders.ts';
 import type { LarkRuntime, RuntimeStatus } from './runtime.ts';
+import type { Workspaces } from './workspaces.ts';
 import type { CredentialStore } from './state/credentials.ts';
 import { probeCredentials } from './state/credentials.ts';
 import type { LarkCredentials, LarkCredentialCheck, LarkDomain } from './lark/types.ts';
@@ -28,6 +31,7 @@ export const ENDPOINTS = Object.freeze({
   CREDENTIALS_CLEAR: 'credentials.clear',
   PROBE: 'probe',
   SETTINGS_SET: 'settings.set',
+  WORKSPACES_LIST: 'workspaces.list',
   RECONNECT: 'reconnect',
   REGISTER_START: 'register.start',
   REGISTER_POLL: 'register.poll',
@@ -48,6 +52,10 @@ export interface PanelDeps {
   settings: LocalConfigStore;
   config: NormalizedConfig;
   registration: AppRegistration;
+  /** 工作区候选与独立模式的默认工作区。 */
+  workspaces: Workspaces;
+  /** 问题与审批提醒的开关、等待时间与待答数。 */
+  reminders: ReminderCenter;
   logger: PluginLogger;
   /** 自检成功时把机器人身份交回入口（@ 提及需要它）；带上是哪个 App。 */
   onProbe?: (check: LarkCredentialCheck, app: LarkCredentials) => void;
@@ -83,6 +91,18 @@ export interface PanelSnapshot {
     superagent: boolean;
     typingIndicator: boolean;
     replyStatus: boolean;
+    /** 独立模式：回合进行中收到新消息时插话（true）还是排队（false）。 */
+    directBusyMode: 'queue' | 'steer';
+    /** 独立模式选定的工作区；空串表示插件自动创建的默认工作区。 */
+    directWorkspaceId: string;
+    questionReminders: boolean;
+    questionDelayMinutes: number;
+  };
+  /** 提醒的待答数与最近错误：面板据此显示「有 N 条在等」。 */
+  reminders: {
+    pendingQuestions: number;
+    pendingApprovals: number;
+    lastError?: { at: number; message: string };
   };
   config: {
     domain: LarkDomain;
@@ -96,6 +116,7 @@ export interface PanelSnapshot {
 export function snapshotOf(deps: PanelDeps): PanelSnapshot {
   const settings = deps.settings.current;
   const status = deps.runtime.status();
+  const reminders = deps.reminders.status();
   return {
     contract: PANEL_CONTRACT,
     pluginVersion: PLUGIN_VERSION,
@@ -105,6 +126,15 @@ export function snapshotOf(deps: PanelDeps): PanelSnapshot {
       superagent: settings.superagent,
       typingIndicator: settings.typingIndicator,
       replyStatus: settings.replyStatus,
+      directBusyMode: settings.directBusyMode,
+      directWorkspaceId: settings.directWorkspaceId,
+      questionReminders: settings.questionReminders,
+      questionDelayMinutes: settings.questionDelayMinutes,
+    },
+    reminders: {
+      pendingQuestions: reminders.pendingQuestions,
+      pendingApprovals: reminders.pendingApprovals,
+      ...(reminders.lastError === undefined ? {} : { lastError: reminders.lastError }),
     },
     config: {
       domain: status.domain,
@@ -165,17 +195,50 @@ export async function handleEndpoint(deps: PanelDeps, endpoint: string, payload:
       const input = payloadOf(payload);
       const patch: Record<string, unknown> = {};
 
-      for (const key of ['enabled', 'superagent', 'typingIndicator', 'replyStatus'] as const) {
+      for (const key of ['enabled', 'superagent', 'typingIndicator', 'replyStatus', 'questionReminders'] as const) {
         if (input[key] !== undefined) {
           if (typeof input[key] !== 'boolean') throw codedError(`${key} 必须是布尔值`, 'invalid-config');
           patch[key] = input[key];
         }
       }
+
+      if (input.questionDelayMinutes !== undefined) {
+        const value = normalizeQuestionDelayMinutes(input.questionDelayMinutes);
+        if (value === undefined) throw codedError('提醒延迟必须是 0–120 的整数分钟', 'invalid-config');
+        patch.questionDelayMinutes = value;
+      }
+
+      if (input.directBusyMode !== undefined) {
+        if (input.directBusyMode !== 'steer' && input.directBusyMode !== 'queue') {
+          throw codedError('回合提交方式只能是 steer 或 queue', 'invalid-config');
+        }
+        patch.directBusyMode = input.directBusyMode;
+      }
+
+      if (input.directWorkspaceId !== undefined) {
+        if (typeof input.directWorkspaceId !== 'string') throw codedError('工作区 id 必须是字符串', 'invalid-config');
+        const wanted = input.directWorkspaceId.trim();
+        const catalog = deps.workspaces.catalog();
+        // 选中的是插件自动创建的默认工作区：存空串，重建后仍指向默认。默认工作区
+        // 不一定出现在宿主列表里（列表服务可能只列用户自己建的），所以先认它。
+        const isDefault = wanted === '' || (catalog.defaultId !== '' && wanted === catalog.defaultId);
+        if (!isDefault) {
+          if (!catalog.available) throw codedError(catalog.reason ?? '宿主不提供工作区服务', 'invalid-config');
+          if (!catalog.items.some((workspace) => workspace.id === wanted)) {
+            throw codedError('选择的工作区不存在', 'invalid-config');
+          }
+        }
+        patch.directWorkspaceId = isDefault ? '' : wanted;
+      }
+
       if (Object.keys(patch).length === 0) throw codedError('没有要保存的设置', 'invalid-config');
 
       await deps.runtime.applySettings(patch as never);
       return snapshotOf(deps);
     }
+
+    case ENDPOINTS.WORKSPACES_LIST:
+      return deps.workspaces.catalog();
 
     case ENDPOINTS.REGISTER_START: {
       const input = payloadOf(payload);

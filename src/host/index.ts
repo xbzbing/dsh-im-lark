@@ -32,6 +32,13 @@ import { CredentialStore } from './state/credentials.ts';
 import { DirectBindingStore, OwnerStore } from './state/direct.ts';
 import type { StandaloneController } from './standalone.ts';
 import { ensurePrivateDir } from './state/files.ts';
+import { resolveDefaultWorkspace } from './state/paths.ts';
+import { ReminderCenter } from './reminders.ts';
+import type { QuestionNext, QuestionRequest } from './questions.ts';
+import type { ApprovalNext } from './approvals.ts';
+import type { ApprovalRequest } from './reminder-text.ts';
+import { Workspaces } from './workspaces.ts';
+import type { WorkspaceRegistry } from './workspaces.ts';
 
 export type { PluginConfig, PluginContext };
 export type { RuntimeStatus };
@@ -58,6 +65,8 @@ export async function apply(ctx: PluginContext, config: PluginConfig | unknown =
   const settings = new LocalConfigStore({ dataDir: normalized.dataDir, config: normalized, logger });
   const bindings = new DirectBindingStore({ dataDir: normalized.dataDir, logger });
   const owners = new OwnerStore({ dataDir: normalized.dataDir, logger });
+  // 默认工作区目录与状态目录分开：会话的 cwd 不该能读到 App Secret。
+  const workspaces = new Workspaces({ dir: resolveDefaultWorkspace(), logger });
 
   /** 当前连接的整套对象；凭据变化时整套重建。 */
   let stack: LarkStack | null = null;
@@ -98,12 +107,19 @@ export async function apply(ctx: PluginContext, config: PluginConfig | unknown =
    * 注册/摘除都做成幂等，凭据重建后可以按当前模式重新接上。
    */
   const applyRouting = (): void => {
-    if (coreEnabled()) registerCore();
-    else unregisterCore();
+    if (coreEnabled()) {
+      registerCore();
+      // 接入核心后由核心发卡片；在等的提醒交回 Web，避免两边同时打扰。
+      reminders.cancelAll('已接入核心，由核心处理');
+    } else {
+      unregisterCore();
+    }
   };
 
   const teardown = (): void => {
     unregisterCore();
+    // 连接要重建：在等的提醒先交回 Web，别让主人对着一条不会再被接收的提醒作答。
+    reminders.cancelAll('飞书连接已重建');
     runtime.setSink(undefined);
     stack?.dispose();
     stack = null;
@@ -156,6 +172,13 @@ export async function apply(ctx: PluginContext, config: PluginConfig | unknown =
       bindings,
       owners,
       controller: () => controller,
+      workspaceId: () => workspaces.defaultId,
+      // 提醒的作答先于普通消息：主人回「批准」「2」时不该把它当聊天送进会话。
+      claim: (draft) =>
+        !coreEnabled() &&
+        (draft.images?.length ?? 0) === 0 &&
+        (draft.files?.length ?? 0) === 0 &&
+        reminders.reply(draft.text),
       ownerLabel: () => tailOf(app.appId),
       health: () => bridgeHealth(runtime.status().connection.state),
     });
@@ -190,7 +213,25 @@ export async function apply(ctx: PluginContext, config: PluginConfig | unknown =
         createDispatcher: sdkFactories.createDispatcher,
       }),
     onChange: ({ app }) => sync(app),
-    onSettings: () => applyRouting(),
+    onSettings: (saved) => {
+      applyRouting();
+      reminders.configure({ enabled: saved.questionReminders, delayMinutes: saved.questionDelayMinutes });
+    },
+  });
+
+  /**
+   * 问题与审批提醒。
+   *
+   * 只在独立模式接管：接入核心后由核心发卡片，再提醒一次会打扰两遍。发送目标只认
+   * 主人单聊（`owners` 里记的 chatId 只来自单聊），没有主人时 broker 会原样 `next()`。
+   */
+  const reminders = new ReminderCenter({
+    send: async (text) => (stack === null ? false : stack.notify(text)),
+    recipient: () => owners.peek()?.openId ?? null,
+    isActive: () => !coreEnabled() && runtime.active && stack !== null,
+    enabled: normalized.questionReminders,
+    delayMinutes: normalized.questionDelayMinutes,
+    logger,
   });
 
   // 扫码创建应用：凭据只在 SDK 授权成功后才落盘，再让运行期按新凭据重连。
@@ -206,11 +247,18 @@ export async function apply(ctx: PluginContext, config: PluginConfig | unknown =
   // 先登记清理，再跑异步初始化：启动失败或宿主提前卸载都不会留下半截运行期。
   ctx.effect?.(
     () => () => {
+      reminders.close();
       runtime.stop();
       teardown();
     },
     'dsh-im-lark: 停止运行期',
   );
+
+  // 注入回调可能在 apply 返回前同步触发（宿主里服务已就绪），而路由要读设置；
+  // 先读一次。读失败只记日志，runtime.start() 还会再读，面板也能看到默认值。
+  await settings.load().catch((error: unknown) => {
+    logger.warn?.('读取本地设置失败，先按默认值运行', error instanceof Error ? error.message : String(error));
+  });
 
   // 宿主里没有 mySuperagent 时不报错：只是「核心不可用」，面板据此禁用开关。
   injectOptional(ctx, 'mySuperagent', (scope) => {
@@ -239,6 +287,14 @@ export async function apply(ctx: PluginContext, config: PluginConfig | unknown =
     }, 'dsh-im-lark: 解挂会话控制器');
   });
 
+  // 独立模式的默认工作区：宿主工作区服务在时自动建一个「飞书会话」目录。
+  injectOptional(ctx, 'workspaceRegistry', (scope) => {
+    workspaces.attach((scope.workspaceRegistry as WorkspaceRegistry | undefined) ?? null);
+    scope.effect?.(() => () => {
+      workspaces.attach(null);
+    }, 'dsh-im-lark: 解挂工作区');
+  });
+
   // 所有会话的事件都要收到：独立模式只处理自己绑定的那个，其余忽略。
   if (typeof ctx.on === 'function') {
     ctx.on(
@@ -249,6 +305,29 @@ export async function apply(ctx: PluginContext, config: PluginConfig | unknown =
       }) as unknown as (...args: unknown[]) => void,
       { global: true },
     );
+
+    // 提问与审批必须 prepend：Web 端的转发监听器在 Host 启动时就注册了，排在它
+    // 后面永远轮不到我们。不接管时原样 next()，行为与没装插件一致。
+    ctx.on(
+      'user-questions/request',
+      ((request: unknown, next: () => Promise<unknown>) =>
+        reminders.handleQuestion(
+          request as QuestionRequest,
+          next as QuestionNext,
+          !coreEnabled() && runtime.active && stack !== null,
+        )) as unknown as (...args: unknown[]) => void,
+      { prepend: true },
+    );
+    ctx.on(
+      'approval/request',
+      ((request: unknown, next: () => Promise<unknown>) =>
+        reminders.handleApproval(
+          request as ApprovalRequest,
+          next as ApprovalNext,
+          !coreEnabled() && runtime.active && stack !== null,
+        )) as unknown as (...args: unknown[]) => void,
+      { prepend: true },
+    );
   }
 
   registerPanelRpc(ctx, {
@@ -257,6 +336,8 @@ export async function apply(ctx: PluginContext, config: PluginConfig | unknown =
     settings,
     config: normalized,
     registration,
+    workspaces,
+    reminders,
     logger,
     onProbe: (check, app) => {
       if (check.ok && check.botOpenId !== undefined && check.botOpenId !== '' && stack?.app.appId === app.appId) {

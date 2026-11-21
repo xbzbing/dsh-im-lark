@@ -5,8 +5,10 @@ import { LocalConfigStore, normalizePluginConfig } from '../../src/host/config.t
 import { ENDPOINTS, RPC_ENDPOINT, RPC_PATH, handleEndpoint, registerPanelRpc, snapshotOf } from '../../src/host/panel-host.ts';
 import type { PanelDeps } from '../../src/host/panel-host.ts';
 import { AppRegistration } from '../../src/host/registration.ts';
+import { ReminderCenter } from '../../src/host/reminders.ts';
 import type { LarkRuntime, RuntimeStatus } from '../../src/host/runtime.ts';
 import { CredentialStore } from '../../src/host/state/credentials.ts';
+import { Workspaces } from '../../src/host/workspaces.ts';
 import { PANEL_CONTRACT } from '../../src/shared/version.ts';
 import { withTempDir } from './helpers/temp.ts';
 
@@ -68,8 +70,23 @@ async function harness(dir: string, options: { withCredentials?: boolean } = {})
     logger: {},
   });
 
+  const workspaces = new Workspaces({ dir: `${dir}/workspace`, logger: {} });
+  workspaces.attach({
+    list: () => [{ id: 'ws-project', title: '项目 A', path: `${dir}/project` }],
+    create: async () => ({ id: 'ws-default' }),
+  });
+  await workspaces.ensureDefault();
+  const reminders = new ReminderCenter({
+    send: async () => true,
+    recipient: () => 'ou_owner',
+    isActive: () => true,
+    enabled: true,
+    delayMinutes: 5,
+    logger: {},
+  });
+
   return {
-    deps: { runtime, credentials, settings, config, registration, logger: {} },
+    deps: { runtime, credentials, settings, config, registration, workspaces, reminders, logger: {} },
     credentials,
     settings,
     calls,
@@ -88,7 +105,11 @@ test('面板：status 只回尾号，不回 Secret', async () => {
     assert.equal(JSON.stringify(snapshot).includes(APP.appSecret), false);
     assert.equal(JSON.stringify(snapshot).includes(APP.appId), false);
     assert.equal(snapshot.settings.typingIndicator, true);
-    assert.equal('questionReminders' in snapshot.settings, false);
+    assert.equal(snapshot.settings.questionReminders, true);
+    assert.equal(snapshot.settings.questionDelayMinutes, 5);
+    assert.equal(snapshot.settings.directBusyMode, 'steer');
+    assert.equal(snapshot.settings.directWorkspaceId, '');
+    assert.deepEqual(snapshot.reminders, { pendingQuestions: 0, pendingApprovals: 0 });
   });
 });
 
@@ -165,9 +186,38 @@ test('面板：设置只接受白名单字段，越界整数被拒', async () =>
     await handleEndpoint(deps, ENDPOINTS.SETTINGS_SET, { typingIndicator: false, replyStatus: true });
     assert.deepEqual(calls.applied, [{ typingIndicator: false, replyStatus: true }]);
 
-    await assert.rejects(handleEndpoint(deps, ENDPOINTS.SETTINGS_SET, { questionDelayMinutes: 999 }), /没有要保存的设置/);
+    await assert.rejects(handleEndpoint(deps, ENDPOINTS.SETTINGS_SET, { questionDelayMinutes: 999 }), /0–120/);
     await assert.rejects(handleEndpoint(deps, ENDPOINTS.SETTINGS_SET, { enabled: 'yes' }), /布尔值/);
     await assert.rejects(handleEndpoint(deps, ENDPOINTS.SETTINGS_SET, {}), /没有要保存的设置/);
+
+    await handleEndpoint(deps, ENDPOINTS.SETTINGS_SET, { questionReminders: false, questionDelayMinutes: 0 });
+    assert.deepEqual(calls.applied[1], { questionReminders: false, questionDelayMinutes: 0 });
+
+    await handleEndpoint(deps, ENDPOINTS.SETTINGS_SET, { directBusyMode: 'queue' });
+    assert.deepEqual(calls.applied[2], { directBusyMode: 'queue' });
+    await assert.rejects(handleEndpoint(deps, ENDPOINTS.SETTINGS_SET, { directBusyMode: 'later' }), /steer 或 queue/);
+  });
+});
+
+test('面板：工作区列表与选择校验', async () => {
+  await withTempDir(async (dir) => {
+    const { deps, calls } = await harness(dir.path);
+
+    const catalog = (await handleEndpoint(deps, ENDPOINTS.WORKSPACES_LIST, {})) as Record<string, any>;
+    assert.equal(catalog.available, true);
+    assert.equal(catalog.defaultId, 'ws-default');
+    assert.deepEqual(catalog.items.map((item: { id: string }) => item.id), ['ws-project']);
+
+    await handleEndpoint(deps, ENDPOINTS.SETTINGS_SET, { directWorkspaceId: 'ws-default' });
+    assert.deepEqual(calls.applied[0], { directWorkspaceId: '' });
+
+    await handleEndpoint(deps, ENDPOINTS.SETTINGS_SET, { directWorkspaceId: 'ws-project' });
+    assert.deepEqual(calls.applied[1], { directWorkspaceId: 'ws-project' });
+
+    await assert.rejects(
+      handleEndpoint(deps, ENDPOINTS.SETTINGS_SET, { directWorkspaceId: 'ws-missing' }),
+      /工作区不存在/,
+    );
   });
 });
 

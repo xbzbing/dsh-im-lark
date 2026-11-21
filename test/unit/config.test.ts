@@ -17,9 +17,11 @@ test('配置：空对象拿到全部默认值，不抛错', () => {
   assert.equal(config.superagent, false);
   assert.equal(config.domain, 'feishu');
   assert.equal(config.maxText, DEFAULT_MAX_TEXT_CHARS);
-  assert.equal(config.directBusyMode, 'interrupt');
+  assert.equal(config.directBusyMode, 'steer');
   assert.equal(config.rpcPath, 'dsh-im-lark');
   assert.equal(config.directWorkspaceId, undefined);
+  assert.equal(config.questionReminders, true);
+  assert.equal(config.questionDelayMinutes, 5);
 });
 
 test('配置：非对象、null、字符串都当成空配置（否则插件装不上）', () => {
@@ -40,7 +42,17 @@ test('配置：枚举字段只认白名单值', () => {
   assert.equal(normalizePluginConfig({ domain: 'lark' }).domain, 'lark');
   assert.equal(normalizePluginConfig({ domain: 'dingtalk' }).domain, 'feishu');
   assert.equal(normalizePluginConfig({ directBusyMode: 'queue' }).directBusyMode, 'queue');
-  assert.equal(normalizePluginConfig({ directBusyMode: 'later' }).directBusyMode, 'interrupt');
+  assert.equal(normalizePluginConfig({ directBusyMode: 'later' }).directBusyMode, 'steer');
+  // 旧配置里的 interrupt 读进来就迁移成 steer，不留在磁盘上继续歧义。
+  assert.equal(normalizePluginConfig({ directBusyMode: 'interrupt' }).directBusyMode, 'steer');
+});
+
+test('配置：提醒延迟只认 0–120 的整数分钟', () => {
+  assert.equal(normalizePluginConfig({ questionDelayMinutes: 0 }).questionDelayMinutes, 0);
+  assert.equal(normalizePluginConfig({ questionDelayMinutes: 120 }).questionDelayMinutes, 120);
+  assert.equal(normalizePluginConfig({ questionDelayMinutes: 121 }).questionDelayMinutes, 5);
+  assert.equal(normalizePluginConfig({ questionDelayMinutes: -1 }).questionDelayMinutes, 5);
+  assert.equal(normalizePluginConfig({ questionDelayMinutes: '10' }).questionDelayMinutes, 5);
 });
 
 test('配置：空白字符串当作未设置（避免生成空目录名）', () => {

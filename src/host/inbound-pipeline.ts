@@ -40,6 +40,11 @@ export interface InboundPipelineOptions {
   /** 核心确认主人后回调：入口据此镜像 owner.json，供 `/lark` 与 CLI 主动发送。 */
   onOwner?: (sender: string, chatId: string, chatType: 'p2p' | 'group') => void;
   now?: () => number;
+  /**
+   * 先给提醒认领：有问题/授权在等主人时，这条文本是作答，不再进会话。
+   * 只对纯文本生效（带媒体/文件的草稿不当作答）。
+   */
+  claim?: (draft: OwnerMessageDraft) => boolean;
   /** 没有核心时的去处（独立模式）。 */
   fallback?: (message: LarkInboundMessage, draft: OwnerMessageDraft) => Promise<void>;
 }
@@ -56,6 +61,7 @@ export class InboundPipeline {
   readonly #isOwner: ((sender: string) => boolean | undefined) | undefined;
   readonly #onOwner: ((sender: string, chatId: string, chatType: 'p2p' | 'group') => void) | undefined;
   readonly #now: () => number;
+  readonly #claim: InboundPipelineOptions['claim'];
   readonly #fallback: InboundPipelineOptions['fallback'];
   #chain: Promise<void> = Promise.resolve();
 
@@ -71,6 +77,7 @@ export class InboundPipeline {
     this.#isOwner = options.isOwner;
     this.#onOwner = options.onOwner;
     this.#now = options.now ?? Date.now;
+    this.#claim = options.claim;
     this.#fallback = options.fallback;
   }
 
@@ -156,6 +163,9 @@ export class InboundPipeline {
     try {
       const draft = await this.#toDraft(message, body);
       if (draft === null) return;
+
+      // 提醒的作答先于一切：主人回「批准」「2」时不该把它当聊天送进会话。
+      if (this.#claim?.(draft) === true) return;
 
       const result: AcceptResult = await this.#bridge.receive(draft);
       if (!result.accepted && result.reason === 'unknown' && this.#fallback !== undefined) {

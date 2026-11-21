@@ -17,7 +17,7 @@ export const CHANNEL_VERSION = '1';
  * 浏览器刷新就能拿到新的 `client.js`，host 半却要重装才更新；两边对不上时
  * 面板提示重启，而不是拿缺字段的响应硬渲染。
  */
-export const PANEL_CONTRACT = 1;
+export const PANEL_CONTRACT = 2;
 
 /**
  * 面板 RPC 的通道名。

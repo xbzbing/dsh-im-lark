@@ -18,10 +18,20 @@ import type { StateLogger } from './state/files.ts';
 import { resolveDataDir } from './state/paths.ts';
 import type { LarkDomain } from './lark/types.ts';
 
-export type BusyMode = 'interrupt' | 'queue';
+/** 独立模式里回合正在跑时又来一条消息的提交方式：插话（steer）或排队（queue）。 */
+export type BusyMode = 'queue' | 'steer';
 
-/** 独立模式里回合正在跑时又来一条消息的提交方式。 */
-export const DEFAULT_DIRECT_BUSY_MODE: BusyMode = 'interrupt';
+/** 默认插话：主人发消息通常是想马上纠正方向，排队会让这条消息过时。 */
+export const DEFAULT_DIRECT_BUSY_MODE: BusyMode = 'steer';
+
+/** 问题与审批提醒：默认开。 */
+export const DEFAULT_QUESTION_REMINDERS = true;
+
+/** 提醒前等多久（分钟）：这段时间在 Web 端答完就不打扰。 */
+export const DEFAULT_QUESTION_DELAY_MINUTES = 5;
+
+/** 提醒延迟上限：再长就没有提醒的意义了。 */
+export const MAX_QUESTION_DELAY_MINUTES = 120;
 
 export interface PluginConfig {
   /** 静态默认开关：是否接入飞书（收发）。 */
@@ -42,6 +52,10 @@ export interface PluginConfig {
   directBusyMode?: BusyMode;
   /** 独立模式回复末尾是否附加模型、推理等级、消耗 token 与时间；默认关。 */
   replyStatus?: boolean;
+  /** 独立模式下，有问题/授权在等主人时发飞书提醒；默认开。 */
+  questionReminders?: boolean;
+  /** 提醒前等多久（分钟）；这段时间在 Web 端答完就不打扰。 */
+  questionDelayMinutes?: number;
   /** 面板 RPC 的路径段，默认包名。 */
   rpcPath?: string;
 }
@@ -57,6 +71,8 @@ export interface NormalizedConfig {
   directWorkspaceId: string | undefined;
   directBusyMode: BusyMode;
   replyStatus: boolean;
+  questionReminders: boolean;
+  questionDelayMinutes: number;
   rpcPath: string;
 }
 
@@ -81,7 +97,14 @@ function asIntegerInRange(value: unknown, min: number, max: number): number | un
 }
 
 function asBusyMode(value: unknown): BusyMode | undefined {
-  return value === 'interrupt' || value === 'queue' ? value : undefined;
+  // 旧配置写过 `interrupt`：语义就是现在的插话，读的时候顺手迁移。
+  if (value === 'interrupt') return 'steer';
+  return value === 'queue' || value === 'steer' ? value : undefined;
+}
+
+/** 提醒延迟：0–120 分钟；非法值返回 undefined（调用方回落到默认）。 */
+export function normalizeQuestionDelayMinutes(value: unknown): number | undefined {
+  return asIntegerInRange(value, 0, MAX_QUESTION_DELAY_MINUTES);
 }
 
 function asDomain(value: unknown): LarkDomain | undefined {
@@ -102,6 +125,8 @@ export function normalizePluginConfig(raw: unknown): NormalizedConfig {
     directWorkspaceId: asString(input.directWorkspaceId),
     directBusyMode: asBusyMode(input.directBusyMode) ?? DEFAULT_DIRECT_BUSY_MODE,
     replyStatus: asBoolean(input.replyStatus) ?? false,
+    questionReminders: asBoolean(input.questionReminders) ?? DEFAULT_QUESTION_REMINDERS,
+    questionDelayMinutes: normalizeQuestionDelayMinutes(input.questionDelayMinutes) ?? DEFAULT_QUESTION_DELAY_MINUTES,
     rpcPath: asString(input.rpcPath) ?? 'dsh-im-lark',
   };
 }
@@ -125,6 +150,10 @@ export interface LocalSettings {
   replyStatus: boolean;
   /** 是否在用户消息上加「正在处理」表情。 */
   typingIndicator: boolean;
+  /** 独立模式下有问题/授权在等主人时发飞书提醒。 */
+  questionReminders: boolean;
+  /** 提醒前等多久（分钟）。 */
+  questionDelayMinutes: number;
 }
 
 export function defaultSettings(config: NormalizedConfig): LocalSettings {
@@ -135,6 +164,8 @@ export function defaultSettings(config: NormalizedConfig): LocalSettings {
     directBusyMode: config.directBusyMode,
     replyStatus: config.replyStatus,
     typingIndicator: config.typingIndicator,
+    questionReminders: config.questionReminders,
+    questionDelayMinutes: config.questionDelayMinutes,
   };
 }
 
@@ -151,6 +182,8 @@ export function normalizeSettings(raw: unknown, config: NormalizedConfig): Local
     directBusyMode: asBusyMode(input.directBusyMode) ?? fallback.directBusyMode,
     replyStatus: asBoolean(input.replyStatus) ?? fallback.replyStatus,
     typingIndicator: asBoolean(input.typingIndicator) ?? fallback.typingIndicator,
+    questionReminders: asBoolean(input.questionReminders) ?? fallback.questionReminders,
+    questionDelayMinutes: normalizeQuestionDelayMinutes(input.questionDelayMinutes) ?? fallback.questionDelayMinutes,
   };
 }
 

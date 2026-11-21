@@ -16,7 +16,7 @@ import type { LarkLogger } from './lark/connection.ts';
 import { createSdkClient } from './lark/sdk.ts';
 import type { LarkCredentials } from './lark/types.ts';
 import { OutboundChannel } from './outbound.ts';
-import type { BridgeHealth } from './protocol.ts';
+import type { BridgeHealth, OwnerMessageDraft } from './protocol.ts';
 import type { LarkEventSink } from './runtime.ts';
 import { StandaloneChat } from './standalone.ts';
 import type { StandaloneController } from './standalone.ts';
@@ -39,6 +39,13 @@ export interface LarkStackOptions {
   owners: OwnerStore;
   /** 宿主的会话控制器；没注入时为 null（独立模式不可用）。 */
   controller: () => StandaloneController | null;
+  /** 独立模式的默认工作区 id（插件自动创建）；空串表示用宿主默认位置。 */
+  workspaceId?: () => string;
+  /**
+   * 入站文本先给提醒认领：返回 true 表示这条消息是问题/授权的作答，不再进会话。
+   * 没有提醒在等时恒为 false。
+   */
+  claim?: (draft: OwnerMessageDraft) => boolean;
   ownerLabel?: () => string;
   /** 长连接健康度：断线时让核心别继续排队。 */
   health?: () => BridgeHealth;
@@ -56,11 +63,14 @@ export interface LarkStack {
   readonly pipeline: InboundPipeline;
   readonly standalone: StandaloneChat;
   readonly sink: LarkEventSink;
+  /** 主动给主人发一条纯文本（提醒用）；没有主人或发送失败时返回 false。 */
+  notify(text: string): Promise<boolean>;
   dispose(): void;
 }
 
 export function createLarkStack(options: LarkStackOptions): LarkStack {
   const { app, logger } = options;
+  const now = options.now ?? Date.now;
   const api =
     options.createApi?.(app) ??
     createSdkLarkApi({
@@ -92,6 +102,7 @@ export function createLarkStack(options: LarkStackOptions): LarkStack {
     settings: options.settings,
     controller: options.controller,
     logger,
+    ...(options.workspaceId === undefined ? {} : { workspaceId: options.workspaceId }),
     ...(options.ownerLabel === undefined ? {} : { ownerLabel: options.ownerLabel }),
     ...(options.now === undefined ? {} : { now: options.now }),
   });
@@ -106,6 +117,7 @@ export function createLarkStack(options: LarkStackOptions): LarkStack {
     ...(options.features === undefined ? {} : { features: options.features }),
     ...(options.isOwner === undefined ? {} : { isOwner: options.isOwner }),
     ...(options.onOwner === undefined ? {} : { onOwner: options.onOwner }),
+    ...(options.claim === undefined ? {} : { claim: options.claim }),
     ...(options.now === undefined ? {} : { now: options.now }),
     fallback: (message, draft) => standalone.handleInbound(message, draft),
   });
@@ -115,6 +127,18 @@ export function createLarkStack(options: LarkStackOptions): LarkStack {
     onCardAction: (envelope) => pipeline.handleCardAction(envelope),
   };
 
+  let sequence = 0;
+  const notify = async (text: string): Promise<boolean> => {
+    const owner = options.owners.peek();
+    if (owner === null || owner.chatId === '') return false;
+    const receipt = await standaloneOutbound.deliver({
+      deliveryId: `reminder-${now()}-${(sequence += 1)}`,
+      chatId: owner.chatId,
+      text,
+    });
+    return receipt.errorCode === undefined;
+  };
+
   return {
     app,
     api,
@@ -122,6 +146,7 @@ export function createLarkStack(options: LarkStackOptions): LarkStack {
     pipeline,
     standalone,
     sink,
+    notify,
     dispose: () => {
       bridge.dispose();
       void pipeline.drain();

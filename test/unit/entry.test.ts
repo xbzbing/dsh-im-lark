@@ -92,7 +92,7 @@ test('入口：没有凭据时加载成功、注册事件监听，清理不抛�
     const result = await apply(ctx as never, { dataDir: dir.path });
     assert.equal(result, undefined, 'apply 必须返回 void，否则 Cordis 会当成 effect');
     assert.ok(cleanups.length > 0);
-    assert.deepEqual(listeners, ['session/event']);
+    assert.deepEqual(listeners, ['session/event', 'user-questions/request', 'approval/request']);
 
     // 状态目录按私密权限创建。
     const mode = (await stat(dir.path)).mode & 0o777;

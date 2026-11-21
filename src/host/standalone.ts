@@ -110,6 +110,8 @@ export interface StandaloneOptions {
   owners: OwnerStore;
   settings: () => LocalSettings;
   controller: () => StandaloneController | null;
+  /** 插件自动创建的默认工作区 id；空串表示用宿主默认位置。 */
+  workspaceId?: () => string;
   logger?: LarkLogger;
   now?: () => number;
   /** 建会话时标题里带的主人标识（App ID 尾号）。 */
@@ -141,6 +143,7 @@ export class StandaloneChat {
   readonly #owners: OwnerStore;
   readonly #settings: () => LocalSettings;
   readonly #controller: () => StandaloneController | null;
+  readonly #workspaceId: () => string;
   readonly #logger: LarkLogger;
   readonly #now: () => number;
   readonly #ownerLabel: () => string;
@@ -162,6 +165,7 @@ export class StandaloneChat {
     this.#owners = options.owners;
     this.#settings = options.settings;
     this.#controller = options.controller;
+    this.#workspaceId = options.workspaceId ?? (() => '');
     this.#logger = options.logger ?? {};
     this.#now = options.now ?? Date.now;
     this.#ownerLabel = options.ownerLabel ?? (() => '');
@@ -299,7 +303,9 @@ export class StandaloneChat {
     if (this.#creating !== null) return this.#creating;
 
     const task = (async () => {
-      const workspaceId = this.#settings().directWorkspaceId.trim();
+      // 面板选过工作区就用它；没选过用插件自动创建的默认工作区；都没有才交给宿主。
+      const configured = this.#settings().directWorkspaceId.trim();
+      const workspaceId = configured !== '' ? configured : this.#workspaceId().trim();
       const created = await controller.create(workspaceId === '' ? {} : { workspaceId });
       const title = `飞书${this.#ownerLabel() === '' ? '' : ` · ${this.#ownerLabel()}`}`;
       await this.#bindings.set({ sessionId: created.sessionId, workspaceId, title });

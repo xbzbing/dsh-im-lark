@@ -21,6 +21,7 @@ interface Harness {
   deliveries: OutboundInput[];
   prompts: Array<{ sessionId: string; mode: string; content: unknown[] }>;
   created: string[];
+  createArgs: Array<{ workspaceId?: string }>;
   cancelled: string[];
   bindings: DirectBindingStore;
   owners: OwnerStore;
@@ -32,11 +33,13 @@ async function harness(
     settings?: Partial<LocalSettings>;
     controller?: Partial<StandaloneController> | null;
     listRows?: Array<Record<string, unknown>>;
+    workspaceId?: () => string;
   } = {},
 ): Promise<Harness> {
   const deliveries: OutboundInput[] = [];
   const prompts: Harness['prompts'] = [];
   const created: string[] = [];
+  const createArgs: Harness['createArgs'] = [];
   const cancelled: string[] = [];
 
   const outbound = {
@@ -51,7 +54,8 @@ async function harness(
     options.controller === null
       ? null
       : {
-          async create() {
+          async create(request) {
+            createArgs.push({ ...request });
             count += 1;
             const sessionId = `s_${count}`;
             created.push(sessionId);
@@ -81,11 +85,12 @@ async function harness(
     owners,
     settings: () => settingsOf(options.settings),
     controller: () => controller,
+    workspaceId: options.workspaceId,
     ownerLabel: () => 'abcdef',
     now: () => 1_000,
   });
 
-  return { chat, deliveries, prompts, created, cancelled, bindings, owners };
+  return { chat, deliveries, prompts, created, createArgs, cancelled, bindings, owners };
 }
 
 let sequence = 0;
@@ -284,10 +289,36 @@ test('独立模式：排队模式映射到 queue，默认插话映射到 steer',
     await queued.chat.handleInbound(first, draftOf(first, '排队'));
     assert.equal(queued.prompts[0]!.mode, 'queue');
 
-    const steered = await harness(dir.path, { settings: { directBusyMode: 'interrupt' } });
+    const steered = await harness(dir.path, { settings: { directBusyMode: 'steer' } });
     const second = inbound();
     await steered.chat.handleInbound(second, draftOf(second, '插话'));
     assert.equal(steered.prompts[0]!.mode, 'steer');
+  });
+});
+
+test('独立模式：建会话带上工作区，面板选择优先于默认工作区', async () => {
+  await withTempDir(async (dir) => {
+    const fallback = await harness(dir.path, { workspaceId: () => 'ws-default' });
+    const first = inbound();
+    await fallback.chat.handleInbound(first, draftOf(first, '你好'));
+    assert.deepEqual(fallback.createArgs, [{ workspaceId: 'ws-default' }]);
+  });
+
+  await withTempDir(async (dir) => {
+    const chosen = await harness(dir.path, {
+      settings: { directWorkspaceId: 'ws-chosen' },
+      workspaceId: () => 'ws-default',
+    });
+    const first = inbound();
+    await chosen.chat.handleInbound(first, draftOf(first, '你好'));
+    assert.deepEqual(chosen.createArgs, [{ workspaceId: 'ws-chosen' }]);
+  });
+
+  await withTempDir(async (dir) => {
+    const none = await harness(dir.path, { workspaceId: () => '' });
+    const first = inbound();
+    await none.chat.handleInbound(first, draftOf(first, '你好'));
+    assert.deepEqual(none.createArgs, [{}]);
   });
 });
 
