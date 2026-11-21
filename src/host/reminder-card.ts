@@ -42,11 +42,14 @@ export function renderReminderCard(input: ReminderCardInput): Card {
   const elements: unknown[] = [stemOf(question)];
   const options = question.options ?? [];
 
-  if (question.multiSelect === true) {
-    // 每个选项一个勾选框（checker）：飞书卡片没有「多选框组」，下拉多选也不像
-    // 多选。勾选值与「其他」输入都随表单提交（form_value.answer_<下标> / custom_input），
-    // 必须有 form_action_type=submit 的按钮，否则勾完无处可点。
-    elements.push({
+  // 飞书卡片没有单选按钮组：单选与多选都用勾选器（checker），靠文案说明区别；
+  // 两者都必须点「提交」才生效，值走 form_value.answer_<下标>。
+  const instruction = question.multiSelect === true
+    ? '多选：可以勾选多项，选好后点「提交」。'
+    : '单选：只能勾选一项，选好后点「提交」。';
+  elements.push(
+    { tag: 'markdown', content: instruction, text_size: 'notation' },
+    {
       tag: 'form',
       name: 'ask_form',
       elements: [
@@ -60,26 +63,8 @@ export function renderReminderCard(input: ReminderCardInput): Card {
         customInput(),
         submitButton({ r: reminderId, q: question.id }),
       ],
-    });
-  } else {
-    // 单选：一行一个选项（飞书卡片没有原生单选框组，用整行可点的选择行，
-    // 点一下就作答），描述与文案一起展示；「其他」走表单提交。
-    elements.push(
-      ...options.map((option, index) => ({
-        tag: 'checker',
-        name: `answer_${index}`,
-        checked: false,
-        overall_checkable: true,
-        text: optionText(option),
-        behaviors: [{ type: 'callback', value: { r: reminderId, q: question.id, o: index } }],
-      })),
-      {
-        tag: 'form',
-        name: 'ask_form',
-        elements: [customInput(), submitButton({ r: reminderId, q: question.id, c: 1 })],
-      },
-    );
-  }
+    },
+  );
 
   const card: Card = {
     schema: CARD_SCHEMA,
@@ -108,10 +93,7 @@ export function renderReminderClosedCard(input: { no: number; question: AskQuest
 }
 
 function optionText(option: { label: string; description?: string }): Record<string, unknown> {
-  const content = option.description === undefined || option.description === ''
-    ? `**${option.label}**`
-    : `**${option.label}**\n${option.description}`;
-  return { tag: 'lark_md', content };
+  return { tag: 'lark_md', content: `**${option.label}**${option.description === undefined || option.description === '' ? '' : `\n${option.description}`}` };
 }
 
 function customInput(): Record<string, unknown> {
@@ -171,6 +153,8 @@ export function answerFromCard(
   const custom = customOf(formValues);
   const checked = checkedFromForm(formValues);
   if (checked.length > 0 || custom !== undefined) {
+    // 单选时「其他」就是答案本身：勾了别的也以输入为准。
+    if (question.multiSelect !== true && custom !== undefined) return { id: question.id, selected: [], custom };
     const labels = checked
       .map((index) => options[index]?.label)
       .filter((label): label is string => label !== undefined && label !== '');

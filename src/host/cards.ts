@@ -68,10 +68,7 @@ export function cardContent(card: unknown): string {
 }
 
 function optionText(option: { label: string; description?: string }): Record<string, unknown> {
-  const content = option.description === undefined || option.description === ''
-    ? `**${option.label}**`
-    : `**${option.label}**\n${option.description}`;
-  return { tag: 'lark_md', content };
+  return { tag: 'lark_md', content: `**${option.label}**${option.description === undefined || option.description === '' ? '' : `\n${option.description}`}` };
 }
 
 function customInput(): Record<string, unknown> {
@@ -181,47 +178,30 @@ function renderQuestion(deliveryId: string, question: InteractionQuestion): unkn
   const options = question.options ?? [];
   if (options.length === 0) return elements;
 
-  if (question.multiSelect === true) {
-    // 飞书的下拉多选只能嵌在表单容器里，且必须有一个 form_action_type=submit 的
-    // 提交按钮：选中值走回调的 `form_value.answer`，不是下拉自身的 behaviors。
-    // 没有提交按钮时，用户勾完没有任何东西可点（真机踩过）。
-    elements.push({
-      tag: 'form',
-      name: 'ask_form',
-      elements: [
-        // 每个选项一个勾选框（checker）：飞书卡片没有「多选框组」，下拉多选不像多选。
-        // 勾选值随表单提交走 form_value.answer_<下标>，按钮上带交付/问题 id。
-        ...options.map((option, index) => ({
-          tag: 'checker',
-          name: `answer_${index}`,
-          checked: false,
-          overall_checkable: false,
-          text: optionText(option),
-        })),
-        customInput(),
-        submitButton({ d: deliveryId, q: question.id }),
-      ],
-    });
-    return elements;
-  }
-
-  // 单选：一行一个选项（飞书卡片没有原生单选框组），点整行就作答；
-  // 描述与文案一起展示；「其他」答案走表单提交。
-  elements.push(
-    ...options.map((option, index) => ({
-      tag: 'checker',
-      name: `answer_${index}`,
-      checked: false,
-      overall_checkable: true,
-      text: optionText(option),
-      behaviors: [{ type: 'callback', value: { d: deliveryId, q: question.id, o: index } }],
-    })),
-    {
-      tag: 'form',
-      name: 'ask_form',
-      elements: [customInput(), submitButton({ d: deliveryId, q: question.id, c: 1 })],
-    },
-  );
+  // 飞书卡片没有单选按钮组：单选和多选都用勾选器，靠文案说明区别，
+  // 两者都必须点「提交」才生效（值走 form_value.answer_<下标> / custom_input）。
+  elements.push({
+    tag: 'markdown',
+    content: question.multiSelect === true
+      ? '多选：可以勾选多项，选好后点「提交」。'
+      : '单选：只能勾选一项，选好后点「提交」。',
+    text_size: 'notation',
+  });
+  elements.push({
+    tag: 'form',
+    name: 'ask_form',
+    elements: [
+      ...options.map((option, index) => ({
+        tag: 'checker',
+        name: `answer_${index}`,
+        checked: false,
+        overall_checkable: false,
+        text: optionText(option),
+      })),
+      customInput(),
+      submitButton({ d: deliveryId, q: question.id }),
+    ],
+  });
   return elements;
 }
 
@@ -336,6 +316,9 @@ export function answerFromAction(
 
   const selected = resolveSelection(question, value, option, formValues);
   if (selected === undefined) return { reason: 'invalid-answer', detail: '无法从回调里认出选项' };
+  if (question.multiSelect !== true && selected.selected.length > 1) {
+    return { reason: 'invalid-answer', detail: '单选题只能勾选一项' };
+  }
 
   return {
     deliveryId,
@@ -376,6 +359,7 @@ function resolveSelection(
       .filter((index) => options[index] !== undefined)
       .sort((left, right) => left - right);
     if (checked.length > 0 || custom !== undefined) {
+      if (question.multiSelect !== true && custom !== undefined) return { selected: [], custom };
       return { selected: checked.map((index) => options[index]!.label), ...(custom === undefined ? {} : { custom }) };
     }
   }

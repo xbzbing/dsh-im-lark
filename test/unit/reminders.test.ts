@@ -599,7 +599,7 @@ test('问题提醒：单题选项发卡片而不是文字，卡片回调结算�
   assert.equal(broker.snapshot().pending, 1);
 
   const reminderId = reminderOf(cards[0]!);
-  assert.equal(broker.applyCardAction({ value: { r: reminderId, q: 'q1', o: 1 } }), true);
+  assert.equal(broker.applyCardAction({ value: { r: reminderId, q: 'q1' }, formValues: { answer_1: true } }), true);
   assert.deepEqual(await pending, { answers: [{ id: 'q1', selected: ['乙'] }] });
   await tick();
 
@@ -608,6 +608,40 @@ test('问题提醒：单题选项发卡片而不是文字，卡片回调结算�
   assert.match(JSON.stringify(patches[0]!.card), /已在飞书作答：乙/u);
   assert.equal(request.signal?.aborted, true);
   assert.equal(broker.snapshot().pending, 0);
+});
+
+test('问题提醒：单选卡勾了多项时不作答，提示后保留待答', async () => {
+  const sent: string[] = [];
+  const broker = new QuestionBroker({
+    send: async (text) => {
+      sent.push(text);
+      return true;
+    },
+    sendCard: async () => 'om_card',
+    recipient: () => 'ou_owner',
+    isRoot: () => true,
+    delayMs: () => 0,
+  });
+
+  broker.handle(
+    { questions: [{ id: 'q1', question: '选一个', options: OPTIONS }] },
+    async () => {
+      throw noProvider();
+    },
+    true,
+  );
+  await tick();
+
+  assert.equal(broker.applyCardAction({ value: { r: 'lark-q-1', q: 'q1' }, formValues: { answer_0: true, answer_2: true } }), true);
+  await tick();
+  assert.match(sent.at(-1)!, /只能勾选一项/u);
+  assert.equal(broker.snapshot().pending, 1);
+
+  // 一个都没勾：同样提示，不把空作答交出去。
+  assert.equal(broker.applyCardAction({ value: { r: 'lark-q-1', q: 'q1' }, formValues: {} }), true);
+  await tick();
+  assert.match(sent.at(-1)!, /还没选择任何选项/u);
+  assert.equal(broker.snapshot().pending, 1);
 });
 
 test('问题提醒：卡片里的「其他」输入落成自定义答案', async () => {

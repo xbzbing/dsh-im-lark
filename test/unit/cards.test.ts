@@ -66,19 +66,29 @@ test('交付卡：标题、正文、详情、参考按顺序出现', () => {
   assert.match(markdown, /参考：\n- 会话一/);
 });
 
-test('交付卡：单选是一行一个选项，value 带交付、问题与序号', () => {
+test('交付卡：单选也是勾选器，文案说明只能勾一项、点提交生效', () => {
   const card = renderDeliveryCard(
     {
       ...DELIVERY,
-      interaction: { questions: [{ id: 'q1', question: '选一个', options: [{ label: '甲' }, { label: '乙' }] }] },
+      interaction: { questions: [{ id: 'q1', question: '选一个', options: [{ label: '甲', description: '第一个' }, { label: '乙' }] }] },
     },
     { interactive: true },
   );
 
+  const shape = card as unknown as CardShape;
+  assert.match(JSON.stringify(shape.body.elements), /单选：只能勾选一项/u);
+  const form = shape.body.elements.find((element) => element.tag === 'form') as
+    | { elements: Array<Record<string, any>> }
+    | undefined;
+  assert.ok(form !== undefined);
+
   const rows = checkersOf(card);
   assert.equal(rows.length, 2);
-  assert.deepEqual(rows[0]!.behaviors![0]!.value, { d: 'dlv_1', q: 'q1', o: 0 });
-  assert.match(rows[1]!.text.content, /乙/u);
+  assert.match(rows[0]!.text.content, /第一个/u);
+  // 点勾选框不直接作答：值只在提交按钮上。
+  assert.equal(rows[0]!.behaviors, undefined);
+  const submit = form.elements.at(-1)!;
+  assert.deepEqual(submit.behaviors[0]!.value, { d: 'dlv_1', q: 'q1' });
 });
 
 test('交付卡：多选用 multi_select_static，值用序号避免文案里的逗号歧义', () => {
@@ -239,6 +249,13 @@ test('作答：表单里的「其他」输入落成 custom', () => {
   );
   assert.ok(!('reason' in both));
   assert.deepEqual(both.answers, [{ id: 'q2', selected: ['甲'], custom: '补充一句' }]);
+});
+
+test('作答：下拉单选取选项 value 还原文案', () => {
+  const store = storeWith(CHOICE);
+  const result = answerFromAction({ d: 'dlv_1', q: 'q1' }, '1', undefined, 'ou', store, 0);
+  assert.ok(!('reason' in result));
+  assert.deepEqual(result.answers, [{ id: 'q1', selected: ['乙'] }]);
 });
 
 test('作答：客户端回传文案时按文案兜底', () => {

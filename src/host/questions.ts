@@ -326,11 +326,25 @@ export class QuestionBroker {
     const question = pending.questions.find((item) => item.id === questionId);
     if (question === undefined) return false;
     const answer = answerFromCard(question, action.value, action.option, action.formValues);
-    if (answer === null) return false;
+    if (answer === null) {
+      this.#noteChoice(`提醒 #${pending.no} 还没选择任何选项，勾选后再点「提交」。`);
+      return true;
+    }
+    if (question.multiSelect !== true && answer.selected.length > 1) {
+      this.#noteChoice(`提醒 #${pending.no} 是单选题，只能勾选一项，请重新提交。`);
+      return true;
+    }
     pending.resolve({ answers: [answer] });
     this.#pending.delete(pending.id);
-    this.#closeCard(pending, `已在飞书作答：${answer.selected.join('、')}`);
+    const chosen = answer.selected.length > 0 ? answer.selected.join('、') : (answer.custom ?? '');
+    this.#closeCard(pending, `已在飞书作答：${chosen}`);
     return true;
+  }
+
+  /** 提交不合规时回一句提示，待答保留（卡片还能再提交）。 */
+  #noteChoice(message: string): void {
+    this.#options.logger?.info?.('卡片作答不合规，已提示主人', message);
+    void this.#options.send(message).catch(() => {});
   }
 
   /** 停机/停用：把所有等待中的提问交回 Web（abort 本地信号，不吞掉请求）。 */

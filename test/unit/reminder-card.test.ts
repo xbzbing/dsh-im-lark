@@ -51,24 +51,24 @@ test('提问卡片：单选渲染成按钮，回调带提醒 id 与下标', () =
   assert.equal((card.header as Record<string, any>).title.content, '需要你回答（#2）');
   assert.match(element(card as Record<string, any>, 0).content, /选一个/u);
 
-  // 单选是一行一个选项：点整行就答，描述跟在文案后面。
-  const rows = [1, 2, 3].map((index) => element(card as Record<string, any>, index));
-  assert.deepEqual(rows.map((row) => row.tag), ['checker', 'checker', 'checker']);
-  assert.deepEqual(rows[1]!.behaviors[0].value, { r: 'lark-q-1', q: 'q1', o: 1 });
-  assert.match(rows[2]!.text.content, /丙/u);
-  assert.match(rows[2]!.text.content, /第三个/u);
-
-  // 「其他」放进一个只含输入框与提交按钮的表单。
-  const form = element(card as Record<string, any>, 4);
+  // 单选也是勾选器，靠文案说明只能勾一项；必须点提交才生效。
+  assert.match(element(card as Record<string, any>, 1).content, /单选：只能勾选一项/u);
+  const form = element(card as Record<string, any>, 2);
   assert.equal(form.tag, 'form');
-  assert.equal(form.elements[0].name, 'custom_input');
-  assert.deepEqual(form.elements[1].behaviors[0].value, { r: 'lark-q-1', q: 'q1', c: 1 });
+
+  const checkers = (form.elements as Array<Record<string, any>>).filter((item) => item.tag === 'checker');
+  assert.deepEqual(checkers.map((item) => item.name), ['answer_0', 'answer_1', 'answer_2']);
+  assert.match(checkers[2]!.text.content, /丙/u);
+  assert.match(checkers[2]!.text.content, /第三个/u);
+  const submit = (form.elements as Array<Record<string, any>>).at(-1)!;
+  assert.deepEqual(submit.behaviors[0].value, { r: 'lark-q-1', q: 'q1' });
 });
 
 test('提问卡片：多选是每项一个勾选框，提交按钮带回提醒 id', () => {
   const question = questionOf({ options: OPTIONS, multiSelect: true });
   const card = renderReminderCard({ reminderId: 'lark-q-1', no: 1, question });
-  const form = element(card as Record<string, any>, 1);
+  assert.match(element(card as Record<string, any>, 1).content, /多选：可以勾选多项/u);
+  const form = element(card as Record<string, any>, 2);
 
   assert.equal(form.tag, 'form');
   const checkers = (form.elements as Array<Record<string, any>>).filter((item) => item.tag === 'checker');
@@ -100,6 +100,8 @@ test('卡片回调：单选下标、多选数组/逗号串/文案都能还原', 
   const multi = questionOf({ options: OPTIONS, multiSelect: true });
 
   assert.deepEqual(answerFromCard(single, { o: 1 }, undefined), { id: 'q1', selected: ['乙'] });
+  // 下拉单选：回调的 option 是选中项的 value。
+  assert.deepEqual(answerFromCard(single, {}, '1'), { id: 'q1', selected: ['乙'] });
   assert.deepEqual(answerFromCard(single, { o: '2' }, undefined), { id: 'q1', selected: ['丙'] });
   // 表单提交（勾选框）：answer_<下标> 为 true 的项。
   assert.deepEqual(answerFromCard(multi, {}, undefined, { answer_0: true, answer_2: true }), { id: 'q1', selected: ['甲', '丙'] });
