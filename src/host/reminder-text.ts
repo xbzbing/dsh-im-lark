@@ -173,16 +173,42 @@ export function answerFromText(questions: readonly AskQuestion[], input: string)
  * 落到选项/序号上的作答，整段自由输入交给普通消息路径，避免把聊天吞成答案。
  */
 export function looksLikeAnswer(questions: readonly AskQuestion[], text: string): boolean {
-  const reply = text.trim();
-  if (reply === '' || questions.length === 0) return false;
-  if (questions.length === 1) return true;
-
-  const segments = reply.split(SEGMENT_SPLIT).map((segment) => segment.trim()).filter(Boolean);
-  if (segments.length !== questions.length) return false;
-  return segments.every((segment, index) => resolvesToOption(questions[index]!, segment));
+  return classifyAnswer(questions, text) === 'complete';
 }
 
-function resolvesToOption(question: AskQuestion, reply: string): boolean {
+/** 认领强度：`complete` 每段都对上选项；`partial` 只有部分段落对得上。 */
+export type AnswerClaim = 'complete' | 'partial';
+
+/**
+ * 这段话该不该被提醒认领，以及认领到什么程度。
+ *
+ * 单题（含计划审阅）认任意非空文本（提醒里写着可以直接回复文字）；多题要求分段数与
+ * 题数一致，并且**每段都落在选项/序号上**才算 `complete`。只对上一部分的回复叫
+ * `partial`：它仍然是「在答题」，提醒会回一句格式提示，而不是让这段话掉进会话——
+ * 主人对着一条两题的提醒只回半句，模型没有上下文可对，只会给出更让人困惑的回答。
+ */
+export function classifyAnswer(questions: readonly AskQuestion[], text: string): AnswerClaim | null {
+  const reply = text.trim();
+  if (reply === '' || questions.length === 0) return null;
+  if (questions.length === 1) return 'complete';
+
+  const segments = reply.split(SEGMENT_SPLIT).map((segment) => segment.trim()).filter(Boolean);
+  if (segments.length !== questions.length) return null;
+  const resolved = segments.map((segment, index) => resolvesToOption(questions[index]!, segment));
+  if (resolved.every(Boolean)) return 'complete';
+  // 只有「至少一段对上了、其余段也像在答题」才认领，避免把正常聊天吞成作答。
+  const attempt = segments.every((segment, index) => resolved[index] === true || looksLikeOptionPrefix(questions[index]!, segment));
+  return attempt && resolved.some(Boolean) ? 'partial' : null;
+}
+
+/** 段首像选项：`3`、`3.`、`3、`、`3：`，或直接以某个选项文案开头。 */
+function looksLikeOptionPrefix(question: AskQuestion, segment: string): boolean {
+  if (/^\d+\s*[.、:：)]?/u.test(segment)) return true;
+  const options = question.options ?? [];
+  return options.some((option) => segment.toLowerCase().startsWith(option.label.toLowerCase()));
+}
+
+export function resolvesToOption(question: AskQuestion, reply: string): boolean {
   const options = question.options ?? [];
   if (options.length === 0) return false;
   if (options.some((option) => option.label.toLowerCase() === reply.toLowerCase())) return true;

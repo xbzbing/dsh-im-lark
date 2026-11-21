@@ -11,7 +11,7 @@
  * 只在「没有接入超级助理」时启用：接入了核心就由核心发卡片，再提醒一次会打扰两遍。
  */
 
-import { answerFromText, looksLikeAnswer, normalizeQuestions, renderQuestions } from './reminder-text.ts';
+import { answerFromText, classifyAnswer, normalizeQuestions, renderQuestions, resolvesToOption } from './reminder-text.ts';
 import type { AskQuestion, Answer } from './reminder-text.ts';
 import { answerFromCard, isCardAnswerable, renderReminderCard, renderReminderClosedCard } from './reminder-card.ts';
 import type { Card } from './cards.ts';
@@ -270,7 +270,12 @@ export class QuestionBroker {
    */
   reply(text: string): boolean {
     for (const pending of this.#pending.newestFirst()) {
-      if (!looksLikeAnswer(pending.questions, text)) continue;
+      const claim = classifyAnswer(pending.questions, text);
+      if (claim === null) continue;
+      if (claim === 'partial') {
+        this.#noteGuidance(pending, text);
+        return true;
+      }
       const answer = answerFromText(pending.questions, text);
       if (answer === null) continue;
       pending.resolve(answer);
@@ -279,6 +284,26 @@ export class QuestionBroker {
       return true;
     }
     return false;
+  }
+
+  /**
+   * 多题只答了几段：提醒里回一句格式提示，保留待答。
+   *
+   * 以前这种情况返回 false，这段话就掉进会话——两题提醒只回半句，模型没有题目上下文，
+   * 只会再问一遍「你这两行是对应什么」。
+   */
+  #noteGuidance(pending: Pending, text: string): void {
+    const segments = text.trim().split(/[；;。\n]+/u).map((segment) => segment.trim()).filter(Boolean);
+    const bad = pending.questions
+      .map((question, index) => ({ index, question, segment: segments[index] ?? '' }))
+      .filter(({ question, segment }) => !resolvesToOption(question, segment))
+      .map(({ index }) => index + 1);
+    this.#options.logger?.info?.('多题作答不完整，提示格式', `#${pending.no} 第 ${bad.join('、')} 题`);
+    const message = [
+      `提醒 #${pending.no} 的作答不完整：第 ${bad.join('、')} 题没对上选项。`,
+      '请按「选项序号或文字；选项序号或文字」逐题回复，例如「1；2」；这条提醒还在等你。',
+    ].join('\n');
+    void this.#options.send(message).catch(() => {});
   }
 
   /**

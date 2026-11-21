@@ -6,6 +6,7 @@ import { QuestionBroker } from '../../src/host/questions.ts';
 import { PendingTable, abortReason, deferred, whenAborted } from '../../src/host/reminder-pending.ts';
 import {
   answerFromText,
+  classifyAnswer,
   looksLikeAnswer,
   normalizeQuestions,
   parseDecision,
@@ -173,6 +174,53 @@ test('待答表：abort 信号与取消原因带 code', async () => {
   idle.resolve('ok');
   assert.equal(await idle.promise, 'ok');
 });
+
+test('提醒文本：多题半答算 partial，整段聊天不认领', () => {
+  const [first, second] = questionsOf();
+  const two = [first!, second!];
+
+  assert.equal(classifyAnswer(two, '1；2'), 'complete');
+  // 第二段带上解释也仍然能落在选项上：按序号开头就当成在答题。
+  assert.equal(classifyAnswer(two, '3\n1还是纯文本'), 'partial');
+  // 只有一段、或者两段都不像选项，不能吞成作答。
+  assert.equal(classifyAnswer(two, '先不改了'), null);
+  assert.equal(classifyAnswer(two, '帮我看看这段代码'), null);
+  assert.equal(looksLikeAnswer(two, '3\n1还是纯文本'), false);
+});
+
+test('问题提醒：多题只答一半时回格式提示，待答保留', async () => {
+  const sent: string[] = [];
+  const broker = new QuestionBroker({
+    send: async (text) => {
+      sent.push(text);
+      return true;
+    },
+    recipient: () => 'ou_owner',
+    isRoot: () => true,
+    delayMs: () => 0,
+  });
+
+  const pending = broker.handle({ questions: questionsOf() }, async () => {
+    throw noProvider();
+  }, true);
+  await tick();
+  assert.equal(sent.length, 1);
+  assert.equal(broker.snapshot().pending, 1);
+
+  assert.equal(broker.reply('3\n1还是纯文本'), true);
+  await tick();
+  assert.match(sent.at(-1)!, /作答不完整/u);
+  assert.equal(broker.snapshot().pending, 1);
+
+  // 补齐后正常结算。
+  assert.equal(broker.reply('1；2'), true);
+  assert.deepEqual((await pending as any).answers, [
+    { id: 'q1', selected: ['甲'] },
+    { id: 'q2', selected: ['乙'] },
+  ]);
+  assert.equal(broker.snapshot().pending, 0);
+});
+
 
 test('问题提醒：Web 在等待时间内答完就一条都不发', async () => {
   const sent: string[] = [];
