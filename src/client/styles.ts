@@ -78,6 +78,9 @@ export const STYLES = `
 }
 .lark-input:focus { border-color: var(--dsw-alias-state-business-primary); }
 .lark-input[data-invalid="true"] { border-color: var(--dsw-alias-state-error-primary); }
+.lark-inline-save { display: flex; align-items: center; gap: 8px; }
+.lark-input-narrow { width: 88px; flex: none; }
+.lark-unit { color: var(--dsw-alias-label-tertiary); font-size: 12px; }
 
 @media (max-width: 560px) { .lark-field-row { grid-template-columns: 1fr; gap: 6px; } }
 

@@ -36,6 +36,7 @@ export const ENDPOINTS = Object.freeze({
   clearCredentials: 'credentials.clear',
   probe: 'probe',
   setSettings: 'settings.set',
+  workspacesList: 'workspaces.list',
   reconnect: 'reconnect',
   registerStart: 'register.start',
   registerPoll: 'register.poll',
