@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { stat } from 'node:fs/promises';
+import { readFile, stat, writeFile } from 'node:fs/promises';
 import { test } from 'node:test';
 
 import { probeCredentials, summarize, CredentialStore } from '../../src/host/state/credentials.ts';
@@ -7,17 +7,69 @@ import { withTempDir } from './helpers/temp.ts';
 
 const APP = { appId: 'cli_a1b2c3d4e5f6', appSecret: 'top-secret-value', domain: 'feishu' as const };
 
+/** 固定时钟：绑定时间要可断言，不能依赖真实时间。 */
+const NOW = 1_700_000_000_000;
+
 test('凭据：保存后能读回，文件权限收紧到 0600', async () => {
   await withTempDir(async (dir) => {
-    const store = new CredentialStore({ dataDir: dir.path });
+    const store = new CredentialStore({ dataDir: dir.path, now: () => NOW });
     const summary = await store.save(APP);
     assert.equal(summary.appIdTail, 'd4e5f6');
+    assert.equal(summary.boundAt, NOW);
 
     const loaded = await store.load();
-    assert.deepEqual(loaded, APP);
+    assert.deepEqual(loaded, { ...APP, boundAt: NOW });
 
     const mode = (await stat(dir.at('credentials.json'))).mode & 0o777;
     assert.equal(mode.toString(8), '600');
+  });
+});
+
+test('凭据：同一 App ID 再保存（换 Secret）绑定时间不变', async () => {
+  await withTempDir(async (dir) => {
+    let now = NOW;
+    const store = new CredentialStore({ dataDir: dir.path, now: () => now });
+    await store.save(APP);
+
+    now = NOW + 86_400_000;
+    const summary = await store.save({ ...APP, appSecret: 'new-secret' });
+    assert.equal(summary.boundAt, NOW);
+    assert.deepEqual(await store.load(), { ...APP, appSecret: 'new-secret', boundAt: NOW });
+  });
+});
+
+test('凭据：换成另一个 App ID 时绑定时间更新', async () => {
+  await withTempDir(async (dir) => {
+    let now = NOW;
+    const store = new CredentialStore({ dataDir: dir.path, now: () => now });
+    await store.save(APP);
+
+    now = NOW + 86_400_000;
+    const summary = await store.save({ ...APP, appId: 'cli_zzzzyyyyxxxx' });
+    assert.equal(summary.boundAt, NOW + 86_400_000);
+    assert.deepEqual(await store.load(), {
+      appId: 'cli_zzzzyyyyxxxx',
+      appSecret: APP.appSecret,
+      domain: 'feishu',
+      boundAt: NOW + 86_400_000,
+    });
+  });
+});
+
+test('凭据：老凭据没有绑定时间时用文件 mtime 兜底，且不写盘', async () => {
+  await withTempDir(async (dir) => {
+    const path = dir.at('credentials.json');
+    await writeFile(path, `${JSON.stringify(APP, null, 2)}\n`);
+
+    const store = new CredentialStore({ dataDir: dir.path });
+    const loaded = await store.load();
+    assert.equal(typeof loaded?.boundAt, 'number');
+    assert.equal(Number.isFinite(loaded?.boundAt ?? 0), true);
+    assert.ok((loaded?.boundAt ?? 0) > 0);
+
+    // 兜底只补在内存里：文件内容不能出现 boundAt。
+    const text = await readFile(path, 'utf8');
+    assert.equal(text.includes('boundAt'), false);
   });
 });
 

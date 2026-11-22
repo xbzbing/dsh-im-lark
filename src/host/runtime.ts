@@ -47,8 +47,12 @@ export interface RuntimeDeps {
 
 /** 面板读的状态快照：只放能安全展示的字段。 */
 export interface RuntimeStatus {
-  /** 已配置的 App ID 尾号；未配置为 null。 */
+  /** 已配置的完整 App ID；未配置为 null。App ID 不是密钥，面板显示完整的。 */
+  appId: string | null;
+  /** App ID 尾号：日志与错误信息用。 */
   appIdTail: string | null;
+  /** 绑定时间（毫秒）；未配置或老凭据为 null。 */
+  boundAt: number | null;
   domain: LarkDomain;
   /** 面板开关：是否接入飞书。 */
   enabled: boolean;
@@ -144,7 +148,9 @@ export class LarkRuntime {
   status(): RuntimeStatus {
     const connection = this.#connection?.status() ?? { state: 'idle' as const, since: Date.now(), reconnectAttempts: 0 };
     return {
+      appId: this.#credentials === null ? null : this.#credentials.appId,
       appIdTail: this.#credentials === null ? null : tailOf(this.#credentials.appId),
+      boundAt: this.#credentials?.boundAt ?? null,
       domain: this.#credentials?.domain ?? this.#deps.config.domain,
       enabled: this.#settings?.enabled ?? this.#deps.config.enabled,
       superagent: this.#settings?.superagent ?? this.#deps.config.superagent,
@@ -262,7 +268,7 @@ export class LarkRuntime {
   }
 }
 
-/** App ID 尾号：面板只显示它。 */
+/** App ID 尾号：日志与错误信息用（面板显示完整 App ID）。 */
 function tailOf(appId: string): string {
   return appId.length > 6 ? appId.slice(-6) : appId;
 }

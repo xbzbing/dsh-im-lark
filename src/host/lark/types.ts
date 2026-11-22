@@ -14,13 +14,28 @@ export interface LarkCredentials {
   appId: string;
   appSecret: string;
   domain: LarkDomain;
+  /**
+   * 首次绑定这个 App ID 的时间（毫秒）。
+   *
+   * 换 App ID 时重置，同一个 App ID 重复保存保留原值：面板要显示的是「什么时候绑的
+   * 机器人」，不是「上一次点了保存」。
+   */
+  boundAt?: number;
 }
 
-/** 连接凭据里可以安全展示的部分：secret 永远不出这个边界。 */
+/**
+ * 连接凭据里可以安全展示的部分：secret 永远不出这个边界。
+ *
+ * App ID 不是密钥（它会作为桥的 account 出现在注册信息里），面板可以显示完整的；
+ * 日志与错误信息仍然只写尾号，避免把租户的应用标识抄进日志。
+ */
 export interface LarkCredentialSummary {
-  /** App ID 尾号：完整 App ID 不进入面板返回值。 */
+  appId: string;
+  /** App ID 尾号：日志与错误信息用。 */
   appIdTail: string;
   domain: LarkDomain;
+  /** 绑定时间；老版本留下的凭据没有这个字段。 */
+  boundAt?: number;
 }
 
 export type LarkChatType = 'p2p' | 'group';

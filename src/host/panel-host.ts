@@ -9,7 +9,7 @@
  * 出来就回 `invalid-config`。浏览器发来的 JSON 是不可信输入，不把它直接塞进
  * 运行期，也不把内部错误原文透给页面（可能带本机路径）。
  *
- * 凭据只在保存时经过这里；读取只回 App ID 尾号（`RuntimeStatus.appIdTail`）。
+ * 凭据只在保存时经过这里；读取回完整 App ID 与绑定时间（Secret 不出边界）。
  */
 
 import { PANEL_CONTRACT, PLUGIN_VERSION, RPC_CHANNEL, RPC_ENDPOINT, RPC_PREFIX } from '../shared/version.ts';
@@ -116,8 +116,12 @@ export interface PanelSnapshot {
     maxText: number;
     rpcChannel: string;
   };
-  /** 已配置时只回尾号；未配置为 null。 */
+  /** 已配置时的完整 App ID；未配置为 null。 */
+  appId: string | null;
+  /** 已配置时的 App ID 尾号；未配置为 null。 */
   appIdTail: string | null;
+  /** 绑定时间（毫秒）；未配置或老凭据为 null。 */
+  boundAt: number | null;
 }
 
 export function snapshotOf(deps: PanelDeps): PanelSnapshot {
@@ -151,7 +155,9 @@ export function snapshotOf(deps: PanelDeps): PanelSnapshot {
       maxText: deps.config.maxText,
       rpcChannel: RPC_CHANNEL,
     },
+    appId: status.appId,
     appIdTail: status.appIdTail,
+    boundAt: status.boundAt,
   };
 }
 

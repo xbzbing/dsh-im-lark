@@ -23,7 +23,9 @@ interface Snapshot {
   contract: number;
   pluginVersion: string;
   status: {
+    appId: string | null;
     appIdTail: string | null;
+    boundAt: number | null;
     domain: string;
     enabled: boolean;
     superagent: boolean;
@@ -73,6 +75,8 @@ export function LarkSettingsPanel(props: any) {
   const [notice, setNotice] = useState('');
 
   const [appId, setAppId] = useState('');
+  /** App ID 只预填一次：用户之后清空或改写输入框，轮询不再覆盖。 */
+  const appIdPrefilled = useRef(false);
   const [appSecret, setAppSecret] = useState('');
   const [domain, setDomain] = useState('feishu');
   const [registration, setRegistration] = useState<RegistrationSnapshot | null>(null);
@@ -93,6 +97,12 @@ export function LarkSettingsPanel(props: any) {
   const applySnapshot = useCallback((next: Snapshot) => {
     setSnapshot(next);
     setDomain((current) => (current === '' ? next.status.domain : current));
+    // 已绑定时把 App ID 预填进输入框，省得改 Secret 还要重输一遍。
+    const bound = next.status.appId;
+    if (!appIdPrefilled.current && bound !== null && bound !== '') {
+      appIdPrefilled.current = true;
+      setAppId((current) => (current === '' ? bound : current));
+    }
   }, []);
 
   const refresh = useCallback(async (quiet = false) => {
@@ -392,8 +402,12 @@ export function LarkSettingsPanel(props: any) {
       h(
         'div',
         { className: 'lark-rows' },
-        row(t('status.connection'), h(Pill, { tone: toneOf(state), dot: true }, t(stateKey(state)))),
-        row(t('status.appId'), h('span', { className: 'lark-mono' }, status?.appIdTail === null ? t('status.notConfigured') : `…${status?.appIdTail ?? ''}`)),
+        row(
+          t('status.appId'),
+          status?.appId === null || status?.appId === undefined
+            ? t('status.notConfigured')
+            : h('span', { className: 'lark-mono' }, status.appId),
+        ),
         row(t('status.domain'), domainLabel),
       ),
       toggleRow(h(Switch, { checked: settings?.enabled === true, onChange: (value: boolean) => toggle('enabled', value), label: t('status.enabled') }), t('status.enabled'), t('status.enabledHint')),
@@ -422,7 +436,10 @@ export function LarkSettingsPanel(props: any) {
           { className: 'lark-card-heading' },
           h('div', { className: 'lark-card-title' }, t('credentials.title')),
           !credentialsOpen && credentialsConfigured
-            ? h('div', { className: 'lark-card-hint' }, t('credentials.configured', { appId: status?.appIdTail ?? '', domain: domainLabel }))
+            ? h('div', { className: 'lark-card-hint' }, t('credentials.configured', { appId: status?.appId ?? '', domain: domainLabel }))
+            : null,
+          !credentialsOpen && credentialsConfigured
+            ? h('div', { className: 'lark-card-hint' }, t('credentials.boundAt', { boundAt: formatBoundAt(status?.boundAt) }))
             : null,
         ),
         h(
@@ -450,7 +467,7 @@ export function LarkSettingsPanel(props: any) {
       h(ConfirmDialog, {
         open: clearOpen,
         title: t('credentials.clearTitle'),
-        lines: [t('credentials.clearHint', { appId: status?.appIdTail ?? '' }), t('credentials.clearWarning')],
+        lines: [t('credentials.clearHint', { appId: status?.appId ?? '' }), t('credentials.clearWarning')],
         cancelLabel: t('common.cancel'),
         confirmLabel: t('credentials.clearConfirm'),
         closeLabel: t('common.close'),
@@ -461,6 +478,12 @@ export function LarkSettingsPanel(props: any) {
         ? h(
             'div',
             { id: 'lark-credentials-body', className: 'lark-card-body' },
+            credentialsConfigured
+              ? h('div', { className: 'lark-card-hint' }, t('credentials.configured', { appId: status?.appId ?? '', domain: domainLabel }))
+              : null,
+            credentialsConfigured
+              ? h('div', { className: 'lark-card-hint' }, t('credentials.boundAt', { boundAt: formatBoundAt(status?.boundAt) }))
+              : null,
             h('div', { className: 'lark-card-hint' }, t('credentials.hint')),
             h(
               'div',
@@ -725,6 +748,14 @@ function workspaceOptions(catalog: WorkspaceCatalog | null, current: string, t: 
 
 function row(label: string, value: unknown) {
   return h('div', { className: 'lark-row' }, h('span', { className: 'lark-row-label' }, label), h('span', { className: 'lark-row-value' }, value));
+}
+
+/** 绑定时间：本地时区，YYYY-MM-DD HH:mm:ss；没有时间返回「—」。 */
+function formatBoundAt(boundAt: number | null | undefined): string {
+  if (boundAt === undefined || boundAt === null) return '—';
+  const at = new Date(boundAt);
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())} ${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())}`;
 }
 
 /** 一行一个字段：label 定宽在左，控件吃满剩余宽度。 */

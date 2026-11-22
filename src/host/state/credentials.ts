@@ -1,14 +1,16 @@
 /**
  * 凭据存储与自检。
  *
- * 凭据只落本机状态文件（`0700` 目录、`0600` 文件、原子写），**不进日志、不进面板
- * 快照、不随包发布**。面板能看到的只有 App ID 与尾号。
+ * 凭据只落本机状态文件（`0700` 目录、`0600` 文件、原子写），**不进日志、不随包
+ * 发布**。面板可以显示完整 App ID 与绑定时间（App ID 不是密钥），App Secret 永远
+ * 不出这个边界。
  *
  * 自检走两条独立的最小请求：先换 `tenant_access_token`（验 app_id/app_secret），
  * 再查机器人信息（验机器人能力是否开启）。两件事分开报错，面板才能给出
  * 「密钥不对」和「机器人能力没开」两种不同的提示。
  */
 
+import { stat } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import type { LarkLogger } from '../lark/connection.ts';
@@ -25,12 +27,14 @@ const TAIL_LENGTH = 6;
 export interface CredentialStoreOptions {
   dataDir: string;
   logger?: LarkLogger;
+  /** 当前时间（毫秒）；测试注入固定值，默认 `Date.now`。 */
+  now?: () => number;
 }
 
 /** 面板能看到的凭据摘要。 */
-export function summarize(appId: string, domain: LarkDomain): LarkCredentialSummary {
+export function summarize(appId: string, domain: LarkDomain, boundAt?: number): LarkCredentialSummary {
   const tail = appId.length > TAIL_LENGTH ? appId.slice(-TAIL_LENGTH) : appId;
-  return { appIdTail: tail, domain };
+  return { appId, appIdTail: tail, domain, ...(boundAt === undefined ? {} : { boundAt }) };
 }
 
 /** 收窄磁盘上的凭据：形状不对就当没配置。 */
@@ -41,17 +45,22 @@ function normalizeStored(raw: unknown): LarkCredentials | undefined {
   const appSecret = typeof input.appSecret === 'string' ? input.appSecret.trim() : '';
   const domain = input.domain === 'lark' ? 'lark' : 'feishu';
   if (appId === '' || appSecret === '') return undefined;
-  return { appId, appSecret, domain };
+  const boundAt = typeof input.boundAt === 'number' && Number.isFinite(input.boundAt) && input.boundAt > 0
+    ? input.boundAt
+    : undefined;
+  return { appId, appSecret, domain, ...(boundAt === undefined ? {} : { boundAt }) };
 }
 
 export class CredentialStore {
   readonly #path: string;
   readonly #logger: LarkLogger;
+  readonly #now: () => number;
   #cached: LarkCredentials | null | undefined;
 
   constructor(options: CredentialStoreOptions) {
     this.#path = join(options.dataDir, CREDENTIALS_FILE);
     this.#logger = options.logger ?? {};
+    this.#now = options.now ?? Date.now;
   }
 
   /** 读凭据；没有或损坏返回 null。 */
@@ -62,8 +71,23 @@ export class CredentialStore {
     if (raw !== undefined && parsed === undefined) {
       this.#logger.warn?.('凭据文件存在但内容不完整，按未配置处理');
     }
-    this.#cached = parsed ?? null;
+    this.#cached = parsed === undefined ? null : await this.#withFileTime(parsed);
     return this.#cached;
+  }
+
+  /**
+   * 老凭据没有绑定时间：用文件修改时间兜底（≈ 上次保存凭据的时间）。
+   *
+   * 只补在内存里，不写盘——写盘会把「猜出来的时间」固化成事实。
+   */
+  async #withFileTime(app: LarkCredentials): Promise<LarkCredentials> {
+    if (app.boundAt !== undefined) return app;
+    try {
+      const info = await stat(this.#path);
+      return { ...app, boundAt: Math.round(info.mtimeMs) };
+    } catch {
+      return app;
+    }
   }
 
   /** 覆盖保存；返回可以展示的摘要。 */
@@ -72,10 +96,14 @@ export class CredentialStore {
     const appSecret = input.appSecret.trim();
     if (appId === '') throw new Error('App ID 不能为空');
     if (appSecret === '') throw new Error('App Secret 不能为空');
-    const payload: LarkCredentials = { appId, appSecret, domain: input.domain };
+    // 绑定时间跟着 App ID 走：同一个应用重复保存（哪怕换了 Secret）保留首次时间。
+    const previous = await this.load();
+    const boundAt =
+      previous !== null && previous.appId === appId && previous.boundAt !== undefined ? previous.boundAt : this.#now();
+    const payload: LarkCredentials = { appId, appSecret, domain: input.domain, boundAt };
     await writePrivateFile(this.#path, `${JSON.stringify(payload, null, 2)}\n`);
     this.#cached = payload;
-    return summarize(appId, input.domain);
+    return summarize(appId, input.domain, boundAt);
   }
 
   /** 清空凭据（卸载应用或换应用时用）。 */
@@ -87,7 +115,7 @@ export class CredentialStore {
   /** 已配置时的摘要；未配置返回 null。 */
   async summary(): Promise<LarkCredentialSummary | null> {
     const app = await this.load();
-    return app ? summarize(app.appId, app.domain) : null;
+    return app ? summarize(app.appId, app.domain, app.boundAt) : null;
   }
 }
 

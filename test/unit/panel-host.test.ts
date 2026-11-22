@@ -13,6 +13,7 @@ import { PANEL_CONTRACT } from '../../src/shared/version.ts';
 import { withTempDir } from './helpers/temp.ts';
 
 const APP = { appId: 'cli_aaaabbbbcccc', appSecret: 'yku-secret-value', domain: 'feishu' as const };
+const BOUND_AT = 1_700_000_000_000;
 
 interface Harness {
   deps: PanelDeps;
@@ -32,7 +33,9 @@ async function harness(dir: string, options: { withCredentials?: boolean } = {})
 
   const calls = { reload: 0, reconnect: 0, applied: [] as Record<string, unknown>[] };
   const status: RuntimeStatus = {
+    appId: options.withCredentials === false ? null : APP.appId,
     appIdTail: options.withCredentials === false ? null : 'bbcccc',
+    boundAt: options.withCredentials === false ? null : BOUND_AT,
     domain: 'feishu',
     enabled: true,
     superagent: false,
@@ -95,15 +98,16 @@ async function harness(dir: string, options: { withCredentials?: boolean } = {})
   };
 }
 
-test('面板：status 只回尾号，不回 Secret', async () => {
+test('面板：status 回完整 App ID 与绑定时间，不回 Secret', async () => {
   await withTempDir(async (dir) => {
     const { deps } = await harness(dir.path);
     const snapshot = (await handleEndpoint(deps, ENDPOINTS.STATUS, {})) as Record<string, any>;
 
     assert.equal(snapshot.contract, PANEL_CONTRACT);
+    assert.equal(snapshot.appId, APP.appId);
     assert.equal(snapshot.appIdTail, 'bbcccc');
+    assert.equal(snapshot.boundAt, BOUND_AT);
     assert.equal(JSON.stringify(snapshot).includes(APP.appSecret), false);
-    assert.equal(JSON.stringify(snapshot).includes(APP.appId), false);
     assert.equal(snapshot.settings.typingIndicator, true);
     assert.equal(snapshot.settings.questionReminders, true);
     assert.equal(snapshot.settings.questionDelayMinutes, 5);
@@ -123,11 +127,20 @@ test('面板：保存凭据后触发重连，且允许留空沿用旧 Secret', a
       domain: 'lark',
     });
     assert.equal(calls.reload, 1);
-    assert.deepEqual(await credentials.load(), { appId: 'cli_new_id_123456', appSecret: 'new-secret', domain: 'lark' });
+    const saved = await credentials.load();
+    assert.equal(saved?.appId, 'cli_new_id_123456');
+    assert.equal(saved?.appSecret, 'new-secret');
+    assert.equal(saved?.domain, 'lark');
+    assert.equal(typeof saved?.boundAt, 'number');
 
     // 只改域名：Secret 留空，沿用已保存的。
     await handleEndpoint(deps, ENDPOINTS.CREDENTIALS_SAVE, { appId: 'cli_new_id_123456', domain: 'feishu' });
-    assert.deepEqual(await credentials.load(), { appId: 'cli_new_id_123456', appSecret: 'new-secret', domain: 'feishu' });
+    const reloaded = await credentials.load();
+    assert.equal(reloaded?.appId, 'cli_new_id_123456');
+    assert.equal(reloaded?.appSecret, 'new-secret');
+    assert.equal(reloaded?.domain, 'feishu');
+    // 同一个 App ID：绑定时间沿用，不因重复保存而刷新。
+    assert.equal(reloaded?.boundAt, saved?.boundAt);
   });
 });
 
@@ -156,11 +169,15 @@ test('面板：App ID 形状不对时拒绝保存', async () => {
 test('面板：清除凭据后状态回到未配置', async () => {
   await withTempDir(async (dir) => {
     const { deps, credentials, status } = await harness(dir.path);
+    status.appId = null;
     status.appIdTail = null;
+    status.boundAt = null;
     const snapshot = (await handleEndpoint(deps, ENDPOINTS.CREDENTIALS_CLEAR, {})) as Record<string, any>;
 
     assert.equal(await credentials.load(), null);
+    assert.equal(snapshot.appId, null);
     assert.equal(snapshot.appIdTail, null);
+    assert.equal(snapshot.boundAt, null);
   });
 });
 

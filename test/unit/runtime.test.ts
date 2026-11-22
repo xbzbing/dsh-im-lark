@@ -84,7 +84,9 @@ test('运行期：没有凭据时停在未连接，不建连接', async () => {
     const { runtime, connections } = await harness(dir.path, { withCredentials: false });
     assert.equal(connections.length, 0);
     assert.equal(runtime.active, false);
+    assert.equal(runtime.status().appId, null);
     assert.equal(runtime.status().appIdTail, null);
+    assert.equal(runtime.status().boundAt, null);
     assert.equal(runtime.status().connection.state, 'idle');
   });
 });
@@ -130,7 +132,9 @@ test('运行期：换凭据才重连，写同样的凭据保持原连接', async
     await runtime.reloadCredentials();
     assert.equal(connections.length, 2);
     assert.equal(connections[0]!.stopped, 1);
+    assert.equal(runtime.status().appId, APP.appId);
     assert.equal(runtime.status().appIdTail, 'bbcccc');
+    assert.equal(typeof runtime.status().boundAt, 'number');
 
     await runtime.reloadCredentials();
     assert.equal(connections.length, 2);
