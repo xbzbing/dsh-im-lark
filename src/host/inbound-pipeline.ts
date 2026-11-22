@@ -65,6 +65,9 @@ export interface InboundPipelineOptions {
   fallback?: (message: LarkInboundMessage, draft: OwnerMessageDraft) => Promise<void>;
 }
 
+/** 卡片回调的重推窗口：没有 `event_id` 时用它兜住平台重推，窗口之外允许同一张卡再提交。 */
+const CARD_RETRY_WINDOW_MS = 5_000;
+
 export class InboundPipeline {
   readonly #api: LarkApi;
   readonly #bridge: LarkBridge;
@@ -149,7 +152,16 @@ export class InboundPipeline {
       return;
     }
 
-    const key = `card:${action.eventId || `${action.messageId}:${JSON.stringify(action.value)}`}`;
+    // 去重键要带上**表单值**：同一张卡每次提交的 `value` 都一样，勾选项在 `form_value` 里。
+    // 只按 `value` 去重会把「改一项重新提交」当成平台重推丢掉——真机上表现为「提示收到了，
+    // 但此后不能再答」。没有 `event_id` 时也只覆盖重推窗口（几秒），窗口之外允许再提交。
+    const stamp = Math.floor(this.#now() / CARD_RETRY_WINDOW_MS);
+    const key = `card:${
+      action.eventId ||
+      `${action.messageId}:${JSON.stringify(action.value)}:${JSON.stringify(action.formValues ?? null)}:${
+        String(action.option ?? '')
+      }:${stamp}`
+    }`;
     if (!this.#seen.claim(key)) return;
 
     this.#enqueue(async () => {
