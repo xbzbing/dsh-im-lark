@@ -109,7 +109,7 @@ dsh plugin --profile web add file:/绝对路径/dsh-im-lark
     failureReminders: true  # 独立模式：回合失败或被外部中止时立刻提醒
 ```
 
-面板能改的项会落到 `$DSH_HOME/.dsh-im-lark/config.json`，卸载重装后沿用。凭据单独存 `credentials.json`，目录 0700、文件 0600，日志与面板快照里只出现 App ID 尾号。
+面板能改的项会落到 `$DSH_HOME/.dsh-im-lark/config.json`，卸载重装后沿用。凭据单独存 `credentials.json`，目录 0700、文件 0600，日志与错误信息里只出现 App ID 尾号；面板显示完整 App ID 与绑定时间，Secret 不回显。
 
 ## 独立会话命令
 

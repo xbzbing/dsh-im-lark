@@ -11,7 +11,7 @@
 1. **`apply()` 不得返回普通对象**（Cordis 会当成 effect，报 `Invalid effect`）。可以是 `async`，但先登记 `ctx.effect` 清理，再 `await` 异步初始化；启动失败只记日志，不把插件带崩。
 2. **不引新依赖**。唯一允许的运行时依赖是 `@larksuiteoapi/node-sdk`（`scripts/verify-package.mjs` 会拦）。要加依赖先改白名单并在 ADR 里写理由。
 3. **不依赖 `dsh-my-superagent` 的包与类型**（devDependency 也不行）。桥接协议用本仓库 `src/host/protocol.ts` 的最小结构类型描述；一致性契约在 `test/unit/bridge.test.ts` 里本地自测。
-4. **不在日志、面板快照、错误信息里出现 App Secret 或完整 App ID**。只允许 App ID 尾号六位。
+4. **不在日志、错误信息里出现 App Secret 或完整 App ID**；日志与错误信息只允许 App ID 尾号六位。面板可以显示完整 App ID（App ID 不是密钥），但 App Secret 永不出现在任何地方。
 5. **不整篇重写别人的文件**。改动用定向编辑；`tsc` 报错先看错误码，不要靠猜。
 6. **不把 SDK 类型泄漏到 `lark/` 之外**。`@larksuiteoapi/node-sdk` 只在 `src/host/lark/sdk.ts` 里出现，其余文件面向 `lark/api.ts`、`lark/connection.ts` 的端口。
 7. **不提交 `docs/local/`、`docs/review/`、`lib/`、`node_modules/`**。
