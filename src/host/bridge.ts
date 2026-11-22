@@ -9,7 +9,7 @@
  */
 
 import { DEFAULT_MAX_TEXT_CHARS } from '../shared/limits.ts';
-import { InteractionStore, answerFromAction, renderAnsweredCard, renderDeliveryCard, renderSupersededCard, cardFits } from './cards.ts';
+import { InteractionStore, answerFromAction, renderAnsweredCard, renderDeliveryCard, renderRejectedCard, renderSupersededCard, cardFits } from './cards.ts';
 import type { Card } from './cards.ts';
 import type { LarkApi } from './lark/api.ts';
 import type { LarkLogger } from './lark/connection.ts';
@@ -26,6 +26,7 @@ import type {
   InteractionAnswerDraft,
   OwnerMessageDraft,
   Receipt,
+  RejectReason,
 } from './protocol.ts';
 
 /** 能力声明：与方案设计 6.3 一致，测试里会用核心的 Schema 再校验一次。 */
@@ -76,6 +77,24 @@ export interface LarkBridge {
   applyCardAction(action: LarkCardAction): Promise<AcceptResult>;
   dispose(): void;
 }
+
+/**
+ * 作答被拒的可见说明：核心模式没有独立模式那条提示通道，拒绝如果只写调试日志，
+ * 用户看到的就是「点了没反应」。文案对齐独立模式（`questions.ts` 的提示）。
+ */
+const REJECT_NOTES: Record<Exclude<RejectReason, 'settled'>, string> = {
+  invalid: '这张卡的作答信息不完整，请在 Web 端作答。',
+  'not-owner': '这张卡只认主人作答，请在 Web 端作答。',
+  unknown: '这张卡已经失效（插件重启过），不再接收作答；请在 Web 端重新作答。',
+  expired: '这张卡已经过期，请在 Web 端重新作答。',
+  'wrong-bridge': '这张卡不属于当前接入的机器人，请在 Web 端作答。',
+  'not-delivered': '这张卡没有真正发出去，请在 Web 端作答。',
+  'not-allowed': '审批要在 Web 端处理，飞书里不代答。',
+  'invalid-answer': '没认出这次选择：单选题只能勾一项，勾选（或填「其他」）后点「提交」。',
+};
+
+/** 这些原因意味着卡不能再答：改成失效态，别留一排还能点的勾选框。 */
+const TERMINAL_REJECTS = new Set<RejectReason>(['unknown', 'expired', 'wrong-bridge', 'not-delivered']);
 
 /** 已交付记录与流式修订的内存上限：长跑进程不能让它们无限涨。 */
 const MAX_DELIVERED = 2_000;
@@ -277,12 +296,53 @@ export function createLarkBridge(deps: BridgeDeps): LarkBridge {
     interactions.markAnswered(deliveryId);
   }
 
+  /**
+   * 作答被拒时给一句话。
+   *
+   * 核心模式没有独立模式那条提示通道：核心拒绝（`invalid-answer` / `expired` / …）如果
+   * 只写调试日志，用户看到的就是「点了没反应」。能答的卡留在原地继续可点（比如单选勾了
+   * 两项），不能再答的直接改成失效态；两种都配一条可见说明，同卡同原因只发一次。
+   */
+  async function noteRejected(
+    action: LarkCardAction,
+    reason: RejectReason,
+    deliveryId: string | undefined,
+  ): Promise<void> {
+    if (reason === 'settled') return; // 已经答过了，再提示只会吵。
+    const note = REJECT_NOTES[reason];
+    const record = deliveryId === undefined ? undefined : delivered.get(deliveryId);
+    if (record !== undefined && TERMINAL_REJECTS.has(reason)) {
+      try {
+        await deps.api.patchCard({ messageId: record.messageId, card: renderRejectedCard(record.delivery, note) });
+        if (deliveryId !== undefined) interactions.delete(deliveryId);
+        return;
+      } catch (error) {
+        logger.debug?.('失效卡片改写失败，改为发提示', errorText(error));
+      }
+    }
+    const key = `note:${action.messageId}:${reason}`;
+    const receipt = await outbound.deliver({ deliveryId: key, chatId: action.chatId, text: note }).catch((error: unknown) => {
+      logger.debug?.('作答被拒的提示没发出去', errorText(error));
+      return undefined;
+    });
+    if (receipt !== undefined && receipt.errorCode !== undefined) {
+      logger.debug?.('作答被拒的提示发送失败', `${receipt.errorCode} ${receipt.error ?? ''}`);
+    }
+  }
+
   async function applyCardAction(action: LarkCardAction): Promise<AcceptResult> {
+    const deliveryId = typeof action.value.d === 'string' ? action.value.d : undefined;
     const result = answerFromAction(action.value, action.option, action.formValues, action.operatorOpenId, interactions, now());
-    if ('reason' in result) return { accepted: false, reason: result.reason, ...(result.detail === undefined ? {} : { detail: result.detail }) };
+    if ('reason' in result) {
+      await noteRejected(action, result.reason, deliveryId);
+      return { accepted: false, reason: result.reason, ...(result.detail === undefined ? {} : { detail: result.detail }) };
+    }
 
     const accepted = await answer(result);
-    if (!accepted.accepted) return accepted;
+    if (!accepted.accepted) {
+      await noteRejected(action, accepted.reason, deliveryId);
+      return accepted;
+    }
 
     interactions.markAnswered(result.deliveryId);
     const record = delivered.get(result.deliveryId);

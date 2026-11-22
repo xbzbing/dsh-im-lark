@@ -3,7 +3,7 @@ import { test } from 'node:test';
 
 import { createLarkBridge } from '../../src/host/bridge.ts';
 import type { LarkApi } from '../../src/host/lark/api.ts';
-import type { BridgeHandle, BridgeProvider, Delivery, InteractionAnswerDraft, OwnerMessageDraft } from '../../src/host/protocol.ts';
+import type { AcceptResult, BridgeHandle, BridgeProvider, Delivery, InteractionAnswerDraft, OwnerMessageDraft } from '../../src/host/protocol.ts';
 
 /** 桥对平台发出的操作：契约用例据此判断「有没有真的再发一次」。 */
 interface NativeOperation {
@@ -19,6 +19,7 @@ interface Fixture {
   patches: unknown[];
   api: LarkApi;
   sentChatIds: string[];
+  contents: string[];
   attach(handle: BridgeHandle): void;
   setReply(messageId: string): void;
 }
@@ -33,6 +34,7 @@ function fixture(options: { maxText?: number; chatFor?: (sender: string) => stri
   const operations: NativeOperation[] = [];
   const patches: unknown[] = [];
   const sentChatIds: string[] = [];
+  const contents: string[] = [];
   let current: Delivery | null = null;
   let sequence = 0;
 
@@ -40,12 +42,14 @@ function fixture(options: { maxText?: number; chatFor?: (sender: string) => stri
     async createMessage(input) {
       sequence += 1;
       sentChatIds.push(input.chatId);
+      contents.push(input.content);
       operations.push({ kind: 'send', deliveryId: current?.id ?? '', ...(current?.stream === undefined ? {} : { streamId: current.stream.id }) });
       assert.equal(input.msgType, 'interactive');
       return { messageId: `om_${sequence}` };
     },
     async replyMessage(input) {
       sequence += 1;
+      contents.push(input.content);
       operations.push({ kind: 'send', deliveryId: current?.id ?? '', ...(current?.stream === undefined ? {} : { streamId: current.stream.id }) });
       assert.equal(input.messageId, 'om_known');
       return { messageId: `om_${sequence}` };
@@ -100,6 +104,7 @@ function fixture(options: { maxText?: number; chatFor?: (sender: string) => stri
     patches,
     api,
     sentChatIds,
+    contents,
     attach: (handle) => bridge.attach(handle),
     setReply: (messageId) => {
       void bridge.receive({
@@ -114,8 +119,8 @@ function fixture(options: { maxText?: number; chatFor?: (sender: string) => stri
   };
 }
 
-/** 核心侧的最小句柄：记录收到的消息与作答。 */
-function coreHandle() {
+/** 核心侧的最小句柄：记录收到的消息与作答；`answerResult` 用来模拟核心拒绝。 */
+function coreHandle(options: { answerResult?: AcceptResult } = {}) {
   const messages: OwnerMessageDraft[] = [];
   const answers: InteractionAnswerDraft[] = [];
   let disposed = 0;
@@ -129,7 +134,7 @@ function coreHandle() {
     },
     async answer(answer) {
       answers.push(answer);
-      return { accepted: true };
+      return options.answerResult ?? { accepted: true };
     },
     update() {},
     commands: () => [],
@@ -438,4 +443,107 @@ test('契约：超长正文照样送达', async () => {
   // 卡片能装下就一张卡发完（平台限制按卡片体积算，不是 maxText）；装不下走文本分条。
   assert.equal(receipt.status, 'sent');
   assert.ok((receipt.messagesSent ?? 0) >= 1);
+});
+
+/* ------------------------------------------------------------------ 作答被拒的反馈 */
+
+const ASK: Delivery = {
+  ...DELIVERY,
+  id: 'dlv_ask2',
+  intent: 'action',
+  interaction: { questions: [{ id: 'q1', question: '选一个', options: [{ label: '甲' }, { label: '乙' }] }] },
+};
+
+test('桥：核心拒绝作答时给可见提示，卡留在原地可以重来', async () => {
+  const { provider, bridge, patches, contents } = fixture();
+  const core = coreHandle({ answerResult: { accepted: false, reason: 'invalid-answer' } });
+  bridge.attach(core.handle);
+
+  await provider.deliver(ASK);
+  contents.length = 0; // 交付本身就是一张卡，只数后续反馈。
+
+  const result = await bridge.applyCardAction({
+    eventId: 'ev_reject',
+    messageId: 'om_1',
+    chatId: 'oc_chat',
+    operatorOpenId: 'ou_owner',
+    value: { d: 'dlv_ask2', q: 'q1', o: 0 },
+  });
+
+  assert.equal(result.accepted, false);
+  if (!result.accepted) assert.equal(result.reason, 'invalid-answer');
+  assert.equal(contents.length, 1);
+  assert.match(contents[0]!, /单选题只能勾一项/u);
+  assert.equal(patches.length, 0);
+  // 卡还能答：这次拒绝不该把待作答标记成「已作答」。
+  assert.equal(bridge.interactions.get('dlv_ask2')?.answered, false);
+});
+
+test('桥：卡已失效时改成失效态，去掉勾选框只留说明', async () => {
+  const { provider, bridge, patches, contents } = fixture();
+  const core = coreHandle({ answerResult: { accepted: false, reason: 'expired' } });
+  bridge.attach(core.handle);
+
+  await provider.deliver(ASK);
+
+  const result = await bridge.applyCardAction({
+    eventId: 'ev_expired',
+    messageId: 'om_1',
+    chatId: 'oc_chat',
+    operatorOpenId: 'ou_owner',
+    value: { d: 'dlv_ask2', q: 'q1', o: 0 },
+  });
+
+  assert.equal(result.accepted, false);
+  assert.equal(patches.length, 1);
+  assert.match(JSON.stringify(patches[0]), /这张卡已经过期/u);
+  assert.doesNotMatch(JSON.stringify(patches[0]), /"tag":"checker"/u);
+  assert.equal(bridge.interactions.get('dlv_ask2'), undefined);
+  // 卡本身已经改成失效态，不再额外发消息。
+  assert.equal(contents.length, 1);
+});
+
+test('桥：核心回「已作答」时不再提示', async () => {
+  const { provider, bridge, patches, contents } = fixture();
+  const core = coreHandle({ answerResult: { accepted: false, reason: 'settled' } });
+  bridge.attach(core.handle);
+
+  await provider.deliver(ASK);
+
+  const result = await bridge.applyCardAction({
+    eventId: 'ev_settled',
+    messageId: 'om_1',
+    chatId: 'oc_chat',
+    operatorOpenId: 'ou_owner',
+    value: { d: 'dlv_ask2', q: 'q1', o: 0 },
+  });
+
+  assert.equal(result.accepted, false);
+  assert.equal(contents.length, 1);
+  assert.equal(patches.length, 0);
+});
+
+test('桥：单选勾了多项只提示一次，改成一项即可通过', async () => {
+  const { provider, bridge, patches, contents } = fixture();
+  const core = coreHandle();
+  bridge.attach(core.handle);
+
+  await provider.deliver(ASK);
+  contents.length = 0;
+
+  const base = { messageId: 'om_1', chatId: 'oc_chat', operatorOpenId: 'ou_owner', value: { d: 'dlv_ask2', q: 'q1' } };
+  const first = await bridge.applyCardAction({ ...base, eventId: 'ev_multi_1', formValues: { answer_0: true, answer_1: true } });
+  const second = await bridge.applyCardAction({ ...base, eventId: 'ev_multi_2', formValues: { answer_0: true, answer_1: true } });
+
+  assert.equal(first.accepted, false);
+  assert.equal(second.accepted, false);
+  if (!second.accepted) assert.equal(second.reason, 'invalid-answer');
+  // 同一张卡同一个原因只提示一次，避免连点变成消息瀑布。
+  assert.equal(contents.length, 1);
+  assert.equal(core.answers.length, 0);
+  assert.equal(patches.length, 0);
+
+  const ok = await bridge.applyCardAction({ ...base, eventId: 'ev_multi_3', formValues: { answer_0: true } });
+  assert.deepEqual(ok, { accepted: true });
+  assert.deepEqual(core.answers[0]!.answers, [{ id: 'q1', selected: ['甲'] }]);
 });

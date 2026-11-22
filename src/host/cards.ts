@@ -226,6 +226,18 @@ export function renderSupersededCard(delivery: Delivery): Card {
   return card;
 }
 
+/**
+ * 作答被拒且这张卡不能再答的终态：去掉按钮，写清为什么。
+ *
+ * 留着一排还能点的勾选框，用户只会反复点、反复被拒，还以为插件坏了。
+ */
+export function renderRejectedCard(delivery: Delivery, note: string): Card {
+  const card = renderDeliveryCard(delivery, { interactive: false });
+  const body = card.body as { elements: unknown[] };
+  body.elements.push({ tag: 'markdown', content: `_${note}_`, text_size: 'notation' });
+  return card;
+}
+
 /* ------------------------------------------------------------------ 交互状态 */
 
 export interface PendingInteraction {
