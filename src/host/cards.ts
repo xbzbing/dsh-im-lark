@@ -227,6 +227,20 @@ export function renderSupersededCard(delivery: Delivery): Card {
 }
 
 /**
+ * 作答被拒但还能重来的卡：保留勾选框与提交按钮，附上原因。
+ *
+ * 飞书的表单提交是一次性的——提交之后这张卡的控件不会再触发回调，只有整卡改写才
+ * 回到可用状态（官方「表单提交后更新为已提交卡片」的同一套做法）。所以拒绝时不能只
+ * 发一句提示，得把这张卡本身重画一遍。
+ */
+export function renderRetryCard(delivery: Delivery, note: string): Card {
+  const card = renderDeliveryCard(delivery, { interactive: true });
+  const body = card.body as { elements: unknown[] };
+  body.elements.push({ tag: 'markdown', content: `_**${note}**_`, text_size: 'notation' });
+  return card;
+}
+
+/**
  * 作答被拒且这张卡不能再答的终态：去掉按钮，写清为什么。
  *
  * 留着一排还能点的勾选框，用户只会反复点、反复被拒，还以为插件坏了。

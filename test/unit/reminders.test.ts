@@ -644,6 +644,44 @@ test('问题提醒：单选卡勾了多项时不作答，提示后保留待答',
   assert.equal(broker.snapshot().pending, 1);
 });
 
+test('问题提醒：单选卡勾了多项时重画卡片，卡还能再提交', async () => {
+  const patches: { messageId: string; card: unknown }[] = [];
+  const texts: string[] = [];
+  const broker = new QuestionBroker({
+    send: async (text) => {
+      texts.push(text);
+      return true;
+    },
+    sendCard: async () => 'om_card',
+    patchCard: async (messageId, card) => {
+      patches.push({ messageId, card });
+    },
+    recipient: () => 'ou_owner',
+    isRoot: () => true,
+    delayMs: () => 0,
+  });
+
+  broker.handle(
+    { questions: [{ id: 'q1', question: '选一个', options: OPTIONS }] },
+    async () => {
+      throw noProvider();
+    },
+    true,
+  );
+  await tick();
+
+  assert.equal(broker.applyCardAction({ value: { r: 'lark-q-1', q: 'q1' }, formValues: { answer_0: true, answer_2: true } }), true);
+  await tick();
+
+  // 表单提交是一次性的：不重画这张卡，用户就再也提交不了。
+  assert.equal(patches.length, 1);
+  assert.equal(patches[0]!.messageId, 'om_card');
+  assert.match(JSON.stringify(patches[0]!.card), /只能勾选一项/u);
+  assert.match(JSON.stringify(patches[0]!.card), /"tag":"form"/u);
+  assert.equal(texts.length, 0);
+  assert.equal(broker.snapshot().pending, 1);
+});
+
 test('问题提醒：卡片里的「其他」输入落成自定义答案', async () => {
   const broker = new QuestionBroker({
     send: async () => true,

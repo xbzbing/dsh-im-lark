@@ -454,13 +454,12 @@ const ASK: Delivery = {
   interaction: { questions: [{ id: 'q1', question: '选一个', options: [{ label: '甲' }, { label: '乙' }] }] },
 };
 
-test('桥：核心拒绝作答时给可见提示，卡留在原地可以重来', async () => {
+test('桥：核心拒绝作答时重画同一张卡并写清原因', async () => {
   const { provider, bridge, patches, contents } = fixture();
   const core = coreHandle({ answerResult: { accepted: false, reason: 'invalid-answer' } });
   bridge.attach(core.handle);
 
   await provider.deliver(ASK);
-  contents.length = 0; // 交付本身就是一张卡，只数后续反馈。
 
   const result = await bridge.applyCardAction({
     eventId: 'ev_reject',
@@ -472,9 +471,13 @@ test('桥：核心拒绝作答时给可见提示，卡留在原地可以重来',
 
   assert.equal(result.accepted, false);
   if (!result.accepted) assert.equal(result.reason, 'invalid-answer');
+  // 表单提交是一次性的：只发提示会让卡点不动，所以必须整卡重画，勾选框还在。
+  assert.equal(patches.length, 1);
+  assert.match(JSON.stringify(patches[0]), /单选题只能勾一项/u);
+  assert.match(JSON.stringify(patches[0]), /"tag":"form"/u);
+  assert.match(JSON.stringify(patches[0]), /"tag":"checker"/u);
+  // 没有再发一条消息：说明就写在这张卡上。
   assert.equal(contents.length, 1);
-  assert.match(contents[0]!, /单选题只能勾一项/u);
-  assert.equal(patches.length, 0);
   // 卡还能答：这次拒绝不该把待作答标记成「已作答」。
   assert.equal(bridge.interactions.get('dlv_ask2')?.answered, false);
 });
@@ -523,27 +526,28 @@ test('桥：核心回「已作答」时不再提示', async () => {
   assert.equal(patches.length, 0);
 });
 
-test('桥：单选勾了多项只提示一次，改成一项即可通过', async () => {
+test('桥：单选勾了多项时每次刷新卡片，改成一项即可通过', async () => {
   const { provider, bridge, patches, contents } = fixture();
   const core = coreHandle();
   bridge.attach(core.handle);
 
   await provider.deliver(ASK);
-  contents.length = 0;
 
   const base = { messageId: 'om_1', chatId: 'oc_chat', operatorOpenId: 'ou_owner', value: { d: 'dlv_ask2', q: 'q1' } };
   const first = await bridge.applyCardAction({ ...base, eventId: 'ev_multi_1', formValues: { answer_0: true, answer_1: true } });
-  const second = await bridge.applyCardAction({ ...base, eventId: 'ev_multi_2', formValues: { answer_0: true, answer_1: true } });
 
   assert.equal(first.accepted, false);
-  assert.equal(second.accepted, false);
-  if (!second.accepted) assert.equal(second.reason, 'invalid-answer');
-  // 同一张卡同一个原因只提示一次，避免连点变成消息瀑布。
-  assert.equal(contents.length, 1);
+  if (!first.accepted) assert.equal(first.reason, 'invalid-answer');
+  // 每次拒绝都重画这张卡：飞书的表单提交是一次性的，不重画就没法再提交。
+  assert.equal(patches.length, 1);
+  assert.match(JSON.stringify(patches[0]), /单选题只能勾一项/u);
   assert.equal(core.answers.length, 0);
-  assert.equal(patches.length, 0);
+  // 提示写在卡上，不额外发消息。
+  assert.equal(contents.length, 1);
 
-  const ok = await bridge.applyCardAction({ ...base, eventId: 'ev_multi_3', formValues: { answer_0: true } });
+  const ok = await bridge.applyCardAction({ ...base, eventId: 'ev_multi_2', formValues: { answer_0: true } });
   assert.deepEqual(ok, { accepted: true });
   assert.deepEqual(core.answers[0]!.answers, [{ id: 'q1', selected: ['甲'] }]);
+  assert.equal(patches.length, 2);
+  assert.match(JSON.stringify(patches[1]), /已作答/u);
 });

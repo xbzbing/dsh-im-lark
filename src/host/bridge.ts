@@ -9,7 +9,7 @@
  */
 
 import { DEFAULT_MAX_TEXT_CHARS } from '../shared/limits.ts';
-import { InteractionStore, answerFromAction, renderAnsweredCard, renderDeliveryCard, renderRejectedCard, renderSupersededCard, cardFits } from './cards.ts';
+import { InteractionStore, answerFromAction, renderAnsweredCard, renderDeliveryCard, renderRejectedCard, renderRetryCard, renderSupersededCard, cardFits } from './cards.ts';
 import type { Card } from './cards.ts';
 import type { LarkApi } from './lark/api.ts';
 import type { LarkLogger } from './lark/connection.ts';
@@ -297,11 +297,12 @@ export function createLarkBridge(deps: BridgeDeps): LarkBridge {
   }
 
   /**
-   * 作答被拒时给一句话。
+   * 作答被拒时说清原因。
    *
-   * 核心模式没有独立模式那条提示通道：核心拒绝（`invalid-answer` / `expired` / …）如果
-   * 只写调试日志，用户看到的就是「点了没反应」。能答的卡留在原地继续可点（比如单选勾了
-   * 两项），不能再答的直接改成失效态；两种都配一条可见说明，同卡同原因只发一次。
+   * 核心模式没有独立模式那条提示通道：拒绝如果只写调试日志，用户看到的就是「点了没反应」。
+   * 能答的卡要**重画**——飞书的表单提交是一次性的，提交过的卡不会再触发回调，只发一句
+   * 提示等于把这张卡废掉；不能再答的直接改成失效态。都改写同一张卡，所以不会刷屏；
+   * 只有卡不在手里（重启丢了记录、回调缺 id）才退化成一条文字提示，同卡同原因只发一次。
    */
   async function noteRejected(
     action: LarkCardAction,
@@ -310,14 +311,16 @@ export function createLarkBridge(deps: BridgeDeps): LarkBridge {
   ): Promise<void> {
     if (reason === 'settled') return; // 已经答过了，再提示只会吵。
     const note = REJECT_NOTES[reason];
+    const terminal = TERMINAL_REJECTS.has(reason);
     const record = deliveryId === undefined ? undefined : delivered.get(deliveryId);
-    if (record !== undefined && TERMINAL_REJECTS.has(reason)) {
+    if (record !== undefined) {
+      const card = terminal ? renderRejectedCard(record.delivery, note) : renderRetryCard(record.delivery, note);
       try {
-        await deps.api.patchCard({ messageId: record.messageId, card: renderRejectedCard(record.delivery, note) });
-        if (deliveryId !== undefined) interactions.delete(deliveryId);
+        await deps.api.patchCard({ messageId: record.messageId, card });
+        if (terminal && deliveryId !== undefined) interactions.delete(deliveryId);
         return;
       } catch (error) {
-        logger.debug?.('失效卡片改写失败，改为发提示', errorText(error));
+        logger.debug?.('卡片改写失败，改为发提示', errorText(error));
       }
     }
     const key = `note:${action.messageId}:${reason}`;

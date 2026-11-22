@@ -34,6 +34,13 @@ export interface ReminderCardInput {
   /** 提醒编号（#N），主人回复文字时也用得上。 */
   no: number;
   question: AskQuestion;
+  /**
+   * 上一次提交为什么不算数。
+   *
+   * 表单提交后飞书不会再让这张卡提交第二次，只有整卡改写才回到可用状态；所以「提示」
+   * 不是另发一条消息，而是把同一张卡连同原因再发一遍（见 `questions.ts`）。
+   */
+  note?: string;
 }
 
 /** 题目 → 一张可作答的卡片；装不下时由调用方退回文字提醒。 */
@@ -47,6 +54,9 @@ export function renderReminderCard(input: ReminderCardInput): Card {
   const instruction = question.multiSelect === true
     ? '多选：可以勾选多项，选好后点「提交」。'
     : '单选：只能勾选一项，选好后点「提交」。';
+  if (input.note !== undefined && input.note !== '') {
+    elements.push({ tag: 'markdown', content: `_**${input.note}**_`, text_size: 'notation' });
+  }
   elements.push(
     { tag: 'markdown', content: instruction, text_size: 'notation' },
     {

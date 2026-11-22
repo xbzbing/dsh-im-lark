@@ -327,11 +327,11 @@ export class QuestionBroker {
     if (question === undefined) return false;
     const answer = answerFromCard(question, action.value, action.option, action.formValues);
     if (answer === null) {
-      this.#noteChoice(`提醒 #${pending.no} 还没选择任何选项，勾选后再点「提交」。`);
+      this.#noteChoice(pending, `提醒 #${pending.no} 还没选择任何选项，勾选后再点「提交」。`);
       return true;
     }
     if (question.multiSelect !== true && answer.selected.length > 1) {
-      this.#noteChoice(`提醒 #${pending.no} 是单选题，只能勾选一项，请重新提交。`);
+      this.#noteChoice(pending, `提醒 #${pending.no} 是单选题，只能勾选一项，请重新提交。`);
       return true;
     }
     pending.resolve({ answers: [answer] });
@@ -341,8 +341,25 @@ export class QuestionBroker {
     return true;
   }
 
-  /** 提交不合规时回一句提示，待答保留（卡片还能再提交）。 */
-  #noteChoice(message: string): void {
+  /**
+   * 提交不合规：把同一张卡连同原因重画一遍，待答保留。
+   *
+   * 飞书的表单提交是一次性的——提交过的卡不会再触发回调，只回一句文字会让卡片表面
+   * 还在、实际点不动。没有卡片或卡 id 时才退回文字提示。
+   */
+  #noteChoice(pending: Pending, message: string): void {
+    const cardMessageId = pending.cardMessageId;
+    const question = pending.questions[0];
+    if (cardMessageId !== undefined && this.#options.patchCard !== undefined && question !== undefined) {
+      this.#options.logger?.info?.('卡片作答不合规，已重发卡片', message);
+      try {
+        const card = renderReminderCard({ reminderId: pending.id, no: pending.no, question, note: message });
+        void this.#options.patchCard(cardMessageId, card).catch(() => {});
+        return;
+      } catch {
+        // 卡片装不下就退回文字：提示不能因为体积发不出去。
+      }
+    }
     this.#options.logger?.info?.('卡片作答不合规，已提示主人', message);
     void this.#options.send(message).catch(() => {});
   }
