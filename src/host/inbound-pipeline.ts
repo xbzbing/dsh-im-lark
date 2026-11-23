@@ -24,12 +24,13 @@ const TEXT_MAX = 20_000;
 /**
  * 消息上的处理状态标记，走官方「添加消息表情回复」接口的 `emoji_type`。
  *
- * - `Typing`：收到就开始处理；
- * - `DONE`：处理完成，覆盖 `Typing`，让主人一眼看出这条已经答完了。
+ * - `Get`：收到消息就打上（官方表情表里「已收到/已受理」语义的那个）；
+ * - `DONE`：处理完成后**追加**，`Get` 不撤，两个标记并排留在消息上。
  *
- * 只有成功处理完才盖 `DONE`：失败时不该给出「已完成」的假信号。
+ * 第一个标记永不撤销——它只表示「收到过」，失败时也成立；只有成功处理完
+ * 才追加 `DONE`，失败不给「已完成」的假信号。
  */
-const REACTION_TYPING = 'Typing';
+const REACTION_ACK = 'Get';
 const REACTION_DONE = 'DONE';
 const KNOWN_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 
@@ -38,7 +39,7 @@ export interface InboundPipelineOptions {
   bridge: LarkBridge;
   logger?: LarkLogger;
   seen?: SeenStore;
-  /** 收到消息时打「正在处理」表情；默认开。 */
+  /** 收到消息时打「收到」表情，处理完追加 `DONE`；默认开。 */
   typing?: boolean;
   /** 机器人自己的 open_id：用来区分 @我 与 @别人。 */
   botOpenId?: () => string | undefined;
@@ -190,8 +191,8 @@ export class InboundPipeline {
   }
 
   async #processMessage(message: LarkInboundMessage, body: InboundBody): Promise<void> {
-    const typingId = this.#typing ? await this.#addReaction(message.messageId, REACTION_TYPING) : undefined;
-    // 只有走到最后才算处理完：中途抛错时不盖 DONE。
+    if (this.#typing) await this.#addReaction(message.messageId, REACTION_ACK);
+    // 只有走到最后才算处理完：中途抛错时不追加 DONE。
     let settled = false;
     try {
       const draft = await this.#toDraft(message, body);
@@ -215,7 +216,7 @@ export class InboundPipeline {
       }
       settled = true;
     } finally {
-      if (typingId !== undefined) await this.#removeReaction(message.messageId, typingId);
+      // 「收到」标记不撤：它只表示消息已受理，成功与失败都留着。
       if (settled && this.#typing) await this.#addReaction(message.messageId, REACTION_DONE);
     }
   }
@@ -228,14 +229,6 @@ export class InboundPipeline {
     } catch (error) {
       // 表情是否可用随租户配置变化，失败就当作没有这个标记。
       return undefined;
-    }
-  }
-
-  async #removeReaction(messageId: string, reactionId: string): Promise<void> {
-    try {
-      await this.#api.removeReaction({ messageId, reactionId });
-    } catch {
-      // 移除失败不影响交付；消息上的表情会随消息留存。
     }
   }
 

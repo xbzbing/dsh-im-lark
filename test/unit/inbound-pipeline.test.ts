@@ -192,16 +192,16 @@ test('流水线：非主人消息被忽略（不解析命令、不驱动会话�
   assert.equal(received.length, 0);
 });
 
-test('流水线：收到先打 Typing，处理完撤掉并盖 DONE', async () => {
+test('流水线：收到先打 Get，处理完追加 DONE，「收到」标记不撤', async () => {
   const { pipeline, reactions, removed } = setup();
   pipeline.handleMessage(messageEvent({ text: '打个表情' }));
   await pipeline.drain();
 
-  assert.deepEqual(reactions, ['Typing', 'DONE']);
-  assert.deepEqual(removed, ['re_1']);
+  assert.deepEqual(reactions, ['Get', 'DONE']);
+  assert.deepEqual(removed, []);
 });
 
-test('流水线：处理抛错时不盖 DONE，只撤掉 Typing', async () => {
+test('流水线：处理抛错时不追加 DONE，「收到」标记仍保留', async () => {
   const reactions: string[] = [];
   const removed: string[] = [];
   const pipeline = new InboundPipeline({
@@ -226,8 +226,8 @@ test('流水线：处理抛错时不盖 DONE，只撤掉 Typing', async () => {
   pipeline.handleMessage(messageEvent({ text: '会失败的' }));
   await pipeline.drain();
 
-  assert.deepEqual(reactions, ['Typing']);
-  assert.deepEqual(removed, ['re_1']);
+  assert.deepEqual(reactions, ['Get']);
+  assert.deepEqual(removed, []);
 });
 
 test('流水线：关掉输入状态时两种表情都不打', async () => {
