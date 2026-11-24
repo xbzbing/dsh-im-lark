@@ -192,16 +192,16 @@ test('流水线：非主人消息被忽略（不解析命令、不驱动会话�
   assert.equal(received.length, 0);
 });
 
-test('流水线：收到先打 Get，处理完追加 DONE，「收到」标记不撤', async () => {
+test('流水线：收到只打 Get，入队不打 DONE（完成标记由交付路径补）', async () => {
   const { pipeline, reactions, removed } = setup();
   pipeline.handleMessage(messageEvent({ text: '打个表情' }));
   await pipeline.drain();
 
-  assert.deepEqual(reactions, ['Get', 'DONE']);
+  assert.deepEqual(reactions, ['Get']);
   assert.deepEqual(removed, []);
 });
 
-test('流水线：处理抛错时不追加 DONE，「收到」标记仍保留', async () => {
+test('流水线：处理抛错只留 Get（不撤销、入队也不追加 DONE）', async () => {
   const reactions: string[] = [];
   const removed: string[] = [];
   const pipeline = new InboundPipeline({

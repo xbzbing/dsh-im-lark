@@ -17,21 +17,18 @@ import type { InboundBody, InboundFileRef, InboundImageRef } from './inbound.ts'
 import { parseCardAction, parseMessageEvent } from './inbound.ts';
 import type { LarkBridge } from './bridge.ts';
 import type { AcceptResult, OwnerFile, OwnerImage, OwnerMessageDraft } from './protocol.ts';
+import { addReaction, REACTION_ACK } from './reactions.ts';
 import { SeenStore } from './state/seen.ts';
 
 const TEXT_MAX = 20_000;
 
 /**
- * 消息上的处理状态标记，走官方「添加消息表情回复」接口的 `emoji_type`。
- *
- * - `Get`：收到消息就打上（官方表情表里「已收到/已受理」语义的那个）；
- * - `DONE`：处理完成后**追加**，`Get` 不撤，两个标记并排留在消息上。
- *
- * 第一个标记永不撤销——它只表示「收到过」，失败时也成立；只有成功处理完
- * 才追加 `DONE`，失败不给「已完成」的假信号。
+ * 入站只负责「收到」标记（`Get`，取值与打点约定见 `reactions.ts`）。
+ * `DONE` 不在这里打：`receive` 返回 accepted 只代表消息入队，任务是之后
+ * 异步跑的（核心 emit 事件即返回、独立模式提交即返回），入队就打会给
+ * 「已完成」的假信号。完成标记由回答真正送达时补（bridge 的交付路径与
+ * 独立模式的回合结束）。
  */
-const REACTION_ACK = 'Get';
-const REACTION_DONE = 'DONE';
 const KNOWN_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 
 export interface InboundPipelineOptions {
@@ -39,7 +36,7 @@ export interface InboundPipelineOptions {
   bridge: LarkBridge;
   logger?: LarkLogger;
   seen?: SeenStore;
-  /** 收到消息时打「收到」表情，处理完追加 `DONE`；默认开。 */
+  /** 收到消息时打「收到」表情（`Get`）；完成标记由交付路径补。默认开。 */
   typing?: boolean;
   /** 机器人自己的 open_id：用来区分 @我 与 @别人。 */
   botOpenId?: () => string | undefined;
@@ -191,44 +188,19 @@ export class InboundPipeline {
   }
 
   async #processMessage(message: LarkInboundMessage, body: InboundBody): Promise<void> {
-    if (this.#typing) await this.#addReaction(message.messageId, REACTION_ACK);
-    // 只有走到最后才算处理完：中途抛错时不追加 DONE。
-    let settled = false;
-    try {
-      const draft = await this.#toDraft(message, body);
-      if (draft === null) {
-        settled = true;
-        return;
-      }
+    if (this.#typing) await addReaction(this.#api, message.messageId, REACTION_ACK);
 
-      // 提醒的作答先于一切：主人回「批准」「2」时不该把它当聊天送进会话。
-      const claimed = this.#claim?.(draft) === true;
-      if (claimed) {
-        settled = true;
-        return;
-      }
+    const draft = await this.#toDraft(message, body);
+    if (draft === null) return;
 
-      const result: AcceptResult = await this.#bridge.receive(draft);
-      if (!result.accepted && result.reason === 'unknown' && this.#fallback !== undefined) {
-        await this.#fallback(message, draft);
-      } else if (!result.accepted) {
-        this.#logger.debug?.('消息未被核心接受', `${result.reason} ${result.detail ?? ''}`);
-      }
-      settled = true;
-    } finally {
-      // 「收到」标记不撤：它只表示消息已受理，成功与失败都留着。
-      if (settled && this.#typing) await this.#addReaction(message.messageId, REACTION_DONE);
-    }
-  }
+    // 提醒的作答先于一切：主人回「批准」「2」时不该把它当聊天送进会话。
+    if (this.#claim?.(draft) === true) return;
 
-  /** 加一条表情回复；失败不外抛，输入状态与完成标记都是尽力而为。 */
-  async #addReaction(messageId: string, emojiType: string): Promise<string | undefined> {
-    try {
-      const result = await this.#api.addReaction({ messageId, emojiType });
-      return result.reactionId;
-    } catch (error) {
-      // 表情是否可用随租户配置变化，失败就当作没有这个标记。
-      return undefined;
+    const result: AcceptResult = await this.#bridge.receive(draft);
+    if (!result.accepted && result.reason === 'unknown' && this.#fallback !== undefined) {
+      await this.#fallback(message, draft);
+    } else if (!result.accepted) {
+      this.#logger.debug?.('消息未被核心接受', `${result.reason} ${result.detail ?? ''}`);
     }
   }
 
