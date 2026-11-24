@@ -62,7 +62,7 @@
   "register.failed": "Failed to create the app. Please retry.",
   "behavior.title": "Message behavior",
   "behavior.typing": "Working / done reaction",
-  "behavior.typingHint": "Adds a Get (received) reaction on arrival, then appends DONE when finished; both stay on the message. Lark has no official typing API.",
+  "behavior.typingHint": "Adds a Get (received) reaction on arrival, then appends DONE to the original message only once the reply is actually delivered (queueing does not count); both stay on the message. Lark has no official typing API.",
   "behavior.replyStatus": "Status line in replies",
   "behavior.replyStatusHint": "Model, reasoning effort and duration.",
   "common.save": "Save",
