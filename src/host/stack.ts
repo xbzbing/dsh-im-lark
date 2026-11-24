@@ -18,6 +18,7 @@ import type { LarkCredentials } from './lark/types.ts';
 import { OutboundChannel } from './outbound.ts';
 import type { BridgeHealth, OwnerMessageDraft } from './protocol.ts';
 import { addReaction, REACTION_DONE } from './reactions.ts';
+import { SeenStore } from './state/seen.ts';
 import type { Card } from './cards.ts';
 import type { LarkCardAction } from './lark/types.ts';
 import type { LarkEventSink } from './runtime.ts';
@@ -89,8 +90,12 @@ export function createLarkStack(options: LarkStackOptions): LarkStack {
 
   // 「处理状态表情」开关同时管完成标记：关掉时收到的 Get 与完成的 DONE 都不打。
   const typing = options.typing ?? options.config.typingIndicator;
+  // 同一平台消息只补一次 DONE：交付重投、同一入站收到多条 result 时不要重复加表情
+  // （重复加同一表情时平台行为未验证，去重后无论如何都不会发生）。
+  const doneSeen = new SeenStore({ ttlMs: 6 * 60 * 60 * 1000, max: 2_000 });
   const markDone = (platformMessageId: string): void => {
     if (!typing) return;
+    if (!doneSeen.claim(platformMessageId)) return;
     void addReaction(api, platformMessageId, REACTION_DONE);
   };
 

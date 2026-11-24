@@ -633,3 +633,43 @@ test('桥：发送失败或 inReplyTo 不在映射里时不补 DONE', async () =
   assert.equal(unknown.status, 'sent');
   assert.deepEqual(marked, []);
 });
+
+test('桥：不带 inReplyTo 的完成交付没有可标记的原消息', async () => {
+  const marked: string[] = [];
+  const { provider } = fixture({ markDone: (id) => marked.push(id) });
+
+  const receipt = await provider.deliver({
+    ...DELIVERY,
+    id: 'dlv_no_reply',
+    refs: [{ kind: 'session', id: 's_1', title: '会话' }],
+  });
+  assert.equal(receipt.status, 'sent');
+  assert.deepEqual(marked, []);
+});
+
+test('桥：流式卡片超限改分条后，终稿只发一次也不再重复打标记', async () => {
+  const marked: string[] = [];
+  // 上限压到极小：第一次修订装不下卡片，走「分条最终稿」并把这条流标记为不再原地更新。
+  const { provider, setReply } = fixture({ maxText: 8, markDone: (id) => marked.push(id) });
+  setReply('om_known');
+
+  const first = await provider.deliver({
+    ...DELIVERY,
+    id: 'dlv_big_1',
+    body: '很长的正文'.repeat(40),
+    inReplyTo: 'oc_chat:om_known',
+    stream: { id: 's_big', revision: 1, final: false },
+  });
+  assert.equal(first.status, 'sent');
+
+  const final = await provider.deliver({
+    ...DELIVERY,
+    id: 'dlv_big_2',
+    body: '很长的正文'.repeat(40),
+    inReplyTo: 'oc_chat:om_known',
+    stream: { id: 's_big', revision: 2, final: true },
+  });
+  assert.equal(final.status, 'sent');
+  assert.equal(marked.length, 1, '分条后的终稿仍要给原消息补一次');
+  assert.deepEqual(marked, ['om_known']);
+});
