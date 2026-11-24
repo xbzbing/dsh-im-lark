@@ -14,6 +14,7 @@
  * 只在独立模式（未接入核心）下接管，接入核心后由核心处理。
  */
 
+import type { ClaimOutcome } from './claim.ts';
 import { parseDecision, renderApproval } from './reminder-text.ts';
 import type { ApprovalDecision, ApprovalRequest } from './reminder-text.ts';
 import { PendingTable, deferred, whenAborted } from './reminder-pending.ts';
@@ -196,16 +197,16 @@ export class ApprovalBroker {
    * 带编号时认指定那条，不带编号认**最后一条**（主人看到的是最近发出的提醒）。
    * 审批是安全边界：模糊的话一律交回普通消息路径，绝不猜。
    */
-  reply(text: string): boolean {
+  reply(text: string): ClaimOutcome | undefined {
     const decision = parseDecision(text);
-    if (decision === null) return false;
+    if (decision === null) return undefined;
     const pending = decision.no === undefined ? this.#pending.newest() : this.#byNo(decision.no);
-    if (pending === undefined) return false;
+    if (pending === undefined) return undefined;
     pending.resolve(decision.outcome);
     this.#pending.delete(pending.id);
     // 回执尽力而为：不阻塞入站流水线，也不因为回执失败改变已经做出的决定。
     void this.#options.send(receipt(pending, decision.outcome)).catch(() => {});
-    return true;
+    return 'settled';
   }
 
   /** 停机/停用：把等待中的审批交回 Web（不吞掉请求，也不把它变成拒绝）。 */

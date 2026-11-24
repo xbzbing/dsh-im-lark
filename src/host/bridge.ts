@@ -293,19 +293,6 @@ export function createLarkBridge(deps: BridgeDeps): LarkBridge {
       : sent;
   }
 
-  function completionTarget(delivery: Delivery): string | undefined {
-    if (delivery.inReplyTo === undefined) return undefined;
-    const complete =
-      delivery.stream !== undefined
-        ? delivery.stream.final === true
-        : delivery.intent === 'result' &&
-          (delivery.refs ?? []).length > 0 &&
-          !NON_COMPLETION_TITLES.has(delivery.title);
-    if (!complete) return undefined;
-    // inReplyTo → 平台消息 id；不在这张表里（重启丢映射、非本桥消息）就不打。
-    return inbound.get(delivery.inReplyTo);
-  }
-
   /**
    * 这条交付是不是「这一轮的正常收尾」，是则给出要补 `DONE` 的原消息（平台 id）。
    *
@@ -318,6 +305,18 @@ export function createLarkBridge(deps: BridgeDeps): LarkBridge {
    * - 非流式（核心 `conversationGranularity='result'`）：正常收尾必带会话 `refs`，
    *   而分发回执/提示/速办失败都不带；两个带 refs 的已知非完成项按固定标题排除。
    */
+  function completionTarget(delivery: Delivery): string | undefined {
+    if (delivery.inReplyTo === undefined) return undefined;
+    const complete =
+      delivery.stream !== undefined
+        ? delivery.stream.final === true
+        : delivery.intent === 'result' &&
+          (delivery.refs ?? []).length > 0 &&
+          !NON_COMPLETION_TITLES.has(delivery.title);
+    if (!complete) return undefined;
+    // inReplyTo → 平台消息 id；不在这张表里（重启丢映射、非本桥消息）就不打。
+    return inbound.get(delivery.inReplyTo);
+  }
 
   /** 核心传的是 sender/open_id；飞书发消息要 chat_id，用入站学到的映射翻译。 */
   function chatOf(recipient: string): string | undefined {

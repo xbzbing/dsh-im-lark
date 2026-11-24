@@ -9,6 +9,7 @@
  * 4. 保存开关与等待时间，关掉时把在等的请求交回 Web。
  */
 
+import type { ClaimOutcome } from './claim.ts';
 import { ApprovalBroker } from './approvals.ts';
 import type { Card } from './cards.ts';
 import type { ApprovalNext } from './approvals.ts';
@@ -184,11 +185,16 @@ export class ReminderCenter {
    * 单题提问认任意文本（自由输入），不按发送顺序的话，审批的「批准」会被它吞掉。
    * 顺序由本类记录——两个 broker 各自计数不可比（各发一次时恒为 1:1）。
    */
-  reply(text: string): boolean {
-    const claimed = this.#lastSent === 'approval'
-      ? this.#approvals.reply(text) || this.#questions.reply(text)
-      : this.#questions.reply(text) || this.#approvals.reply(text);
-    return claimed;
+  reply(text: string): ClaimOutcome | undefined {
+    // 谁最后发就先给谁认；三态不能用 `||` 串（'settled' 与 'unsettled' 都是真值）。
+    const order = this.#lastSent === 'approval'
+      ? [this.#approvals, this.#questions]
+      : [this.#questions, this.#approvals];
+    for (const center of order) {
+      const outcome = center.reply(text);
+      if (outcome !== undefined) return outcome;
+    }
+    return undefined;
   }
 
   /** 更新设置；关掉时把在等的请求交回 Web，别挂到超时。 */

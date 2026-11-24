@@ -17,7 +17,7 @@ interface SetupOptions {
   downloadFails?: boolean;
   isOwner?: (sender: string) => boolean | undefined;
   claimCard?: (action: { value: Record<string, unknown>; option?: unknown }) => boolean;
-  claim?: (draft: OwnerMessageDraft) => boolean;
+  claim?: (draft: OwnerMessageDraft) => 'settled' | 'unsettled' | undefined;
   reactionFails?: boolean;
 }
 
@@ -81,10 +81,17 @@ function setup(options: SetupOptions = {}) {
   };
   bridge.attach(handle);
 
+  // 完成标记由栈注入（真实接线里那个闭包负责开关闸门与去重）；这里模拟它。
+  const typing = options.typing ?? true;
+  const markDone = (): void => {
+    if (typing) reactions.push('DONE');
+  };
+
   const pipeline = new InboundPipeline({
     api,
     bridge,
-    typing: options.typing ?? true,
+    typing,
+    markDone,
     ...(options.ownerOpenId === undefined ? {} : { ownerOpenId: () => options.ownerOpenId }),
     features: () => options.features ?? [],
     ...(options.isOwner === undefined ? {} : { isOwner: options.isOwner }),
@@ -473,13 +480,22 @@ test('流水线：队列按到达顺序处理', async () => {
   );
 });
 
-test('流水线：提醒作答（claim）当场补 DONE，不等人会话', async () => {
-  const { pipeline, reactions, received } = setup({ claim: () => true });
+test('流水线：提醒作答已结算时当场补 DONE，不进会话', async () => {
+  const { pipeline, reactions, received } = setup({ claim: () => 'settled' });
   pipeline.handleMessage(messageEvent({ text: '批准' }));
   await pipeline.drain();
 
   assert.deepEqual(received, [], '作答不进会话');
   assert.deepEqual(reactions, ['Get', 'DONE']);
+});
+
+test('流水线：作答只答一半（还在等）不盖 DONE', async () => {
+  const { pipeline, reactions, received } = setup({ claim: () => 'unsettled' });
+  pipeline.handleMessage(messageEvent({ text: '只答一题' }));
+  await pipeline.drain();
+
+  assert.deepEqual(received, [], '仍在提醒里消化，不进会话');
+  assert.deepEqual(reactions, ['Get'], '提醒还在等，不能显示已完成');
 });
 
 test('流水线：表情接口不可用时静默降级，消息照常处理', async () => {

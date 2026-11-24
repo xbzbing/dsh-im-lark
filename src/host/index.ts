@@ -176,11 +176,13 @@ export async function apply(ctx: PluginContext, config: PluginConfig | unknown =
       controller: () => controller,
       workspaceId: () => workspaces.defaultId,
       // 提醒的作答先于普通消息：主人回「批准」「2」时不该把它当聊天送进会话。
-      claim: (draft) =>
-        !coreEnabled() &&
-        (draft.images?.length ?? 0) === 0 &&
-        (draft.files?.length ?? 0) === 0 &&
-        reminders.reply(draft.text),
+      // 带媒体的草稿不当作答（那是发给模型的内容）。
+      claim: (draft) => {
+        if (coreEnabled()) return undefined;
+        if ((draft.images?.length ?? 0) > 0) return undefined;
+        if ((draft.files?.length ?? 0) > 0) return undefined;
+        return reminders.reply(draft.text);
+      },
       // 独立模式的提问卡不是核心交付：先给提醒认领，认不出再交给桥。
       claimCard: (action) => !coreEnabled() && reminders.applyCardAction(action),
       ownerLabel: () => tailOf(app.appId),

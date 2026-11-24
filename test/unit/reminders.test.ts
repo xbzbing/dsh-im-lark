@@ -210,13 +210,13 @@ test('问题提醒：多题只答一半时回格式提示，待答保留', async
   assert.equal(sent.length, 1);
   assert.equal(broker.snapshot().pending, 1);
 
-  assert.equal(broker.reply('3\n1还是纯文本'), true);
+  assert.equal(broker.reply('3\n1还是纯文本'), 'unsettled');
   await tick();
   assert.match(sent.at(-1)!, /作答不完整/u);
   assert.equal(broker.snapshot().pending, 1);
 
   // 补齐后正常结算。
-  assert.equal(broker.reply('1；2'), true);
+  assert.equal(broker.reply('1；2'), 'settled');
   assert.deepEqual((await pending as any).answers, [
     { id: 'q1', selected: ['甲'] },
     { id: 'q2', selected: ['乙'] },
@@ -272,7 +272,7 @@ test('问题提醒：Web 不在时发提醒，主人作答后取消 Web 那一�
   await tick();
   assert.equal(sent.length, 1);
   assert.equal(broker.snapshot().pending, 1);
-  assert.equal(broker.reply('2'), true);
+  assert.equal(broker.reply('2'), 'settled');
 
   assert.deepEqual(await pending, { answers: [{ id: 'q1', selected: ['乙'] }] });
   assert.equal(request.signal?.aborted, true);
@@ -361,7 +361,7 @@ test('问题提醒：超时后交回 Web，不再接受飞书作答', async () =
   await tick();
   await assert.rejects(pending, /等待飞书作答超时/u);
   // 超时后这条提醒已摘掉，晚到的回复不再被认领。
-  assert.equal(broker.reply('1'), false);
+  assert.equal(broker.reply('1'), undefined);
   assert.equal(broker.snapshot().pending, 0);
 });
 
@@ -383,7 +383,7 @@ test('授权提醒：Web 回 unavailable 时发提醒，批准只给 allowed-onc
   assert.match(sent[0]!, /#1：shell/u);
   assert.equal(broker.snapshot().pending, 1);
 
-  assert.equal(broker.reply('批准'), true);
+  assert.equal(broker.reply('批准'), 'settled');
   assert.equal(await pending, 'allowed-once');
   await tick();
   assert.match(sent[1]!, /已批准：shell（#1）/u);
@@ -408,12 +408,12 @@ test('授权提醒：编号指定等待中的某一条，模糊文本不认领',
   await tick();
   assert.equal(broker.snapshot().pending, 2);
 
-  assert.equal(broker.reply('再看看'), false);
-  assert.equal(broker.reply('拒绝 1'), true);
+  assert.equal(broker.reply('再看看'), undefined);
+  assert.equal(broker.reply('拒绝 1'), 'settled');
   assert.equal(await first, 'rejected');
   assert.equal(broker.snapshot().pending, 1);
 
-  assert.equal(broker.reply('批准'), true);
+  assert.equal(broker.reply('批准'), 'settled');
   assert.equal(await second, 'allowed-once');
   assert.equal(broker.snapshot().pending, 0);
   assert.match(sent.at(-1)!, /#2/u);
@@ -722,7 +722,7 @@ test('问题提醒：文字提醒仍接受自由输入当自定义答案', async
   await tick();
 
   // 没有卡片 → 文字通道，任意文本都算作答（落成 custom）。
-  assert.equal(broker.reply('都不合适'), true);
+  assert.equal(broker.reply('都不合适'), 'settled');
   assert.deepEqual(await pending, { answers: [{ id: 'q1', selected: [], custom: '都不合适' }] });
 });
 
@@ -836,7 +836,7 @@ test('问题提醒：文字作答也会把卡片改成终态', async () => {
   );
   await tick();
 
-  assert.equal(broker.reply('2'), true);
+  assert.equal(broker.reply('2'), 'settled');
   assert.deepEqual(await pending, { answers: [{ id: 'q1', selected: ['乙'] }] });
   await tick();
   assert.match(JSON.stringify(patches.at(-1)), /已在飞书作答：乙/u);

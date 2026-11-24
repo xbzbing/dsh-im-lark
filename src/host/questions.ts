@@ -11,6 +11,7 @@
  * 只在「没有接入超级助理」时启用：接入了核心就由核心发卡片，再提醒一次会打扰两遍。
  */
 
+import type { ClaimOutcome } from './claim.ts';
 import { answerFromText, classifyAnswer, normalizeQuestions, renderQuestions, resolvesToOption } from './reminder-text.ts';
 import type { AskQuestion, Answer } from './reminder-text.ts';
 import { answerFromCard, isCardAnswerable, renderReminderCard, renderReminderClosedCard } from './reminder-card.ts';
@@ -268,23 +269,24 @@ export class QuestionBroker {
    * 入站文本尝试当作作答；返回 true 表示这条消息已被消化（不再进普通消息路径）。
    * 多条待答时认**最后一条**：主人在飞书里看到的是最近发出的那条提醒。
    */
-  reply(text: string): boolean {
+  reply(text: string): ClaimOutcome | undefined {
     for (const pending of this.#pending.newestFirst()) {
       // 文字提醒没有「其他」输入框：单题仍接受任意文本当自定义答案。
       const claim = classifyAnswer(pending.questions, text, { allowCustom: pending.cardMessageId === undefined });
       if (claim === null) continue;
       if (claim === 'partial') {
+        // 认下了但没结算：提醒仍挂起并回了格式提示，不能当成「已答完」。
         this.#noteGuidance(pending, text);
-        return true;
+        return 'unsettled';
       }
       const answer = answerFromText(pending.questions, text);
       if (answer === null) continue;
       pending.resolve(answer);
       this.#pending.delete(pending.id);
       this.#closeCard(pending, `已在飞书作答：${describeAnswer(answer)}`);
-      return true;
+      return 'settled';
     }
-    return false;
+    return undefined;
   }
 
   /**

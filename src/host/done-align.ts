@@ -12,6 +12,12 @@
  *
  * 于是结算规则：取队头（开启这一轮的那条），再把其后连续的 steer 条目一并取走
  * ——它们已被本轮吸收；紧随其后的 queue 条目属于它自己之后的回合，留在队里。
+ *
+ * 前提：每个 `turn/end` 对应的这一轮**由队头那条开启**。queue 模式下若回合由 Web 端
+ * 续聊或宿主自动续跑发起（没有对应的入站消息），队头会被提前结算——宿主事件里没有
+ * 可对账的 prompt id（`turn/start` 只有 `{turn}`、`user/message` 无 id），只能靠这条
+ * 前提；影响限于完成表情（会早打或漏打，不会给错误的「未完成」），且只在非默认的
+ * queue 模式下出现。
  */
 export type SubmitMode = 'steer' | 'queue';
 
@@ -23,10 +29,6 @@ interface Pending {
 export class DoneAlign {
   /** 已提交、尚无定论的消息，按提交顺序。 */
   readonly #pending: Pending[] = [];
-
-  get size(): number {
-    return this.#pending.length;
-  }
 
   /** 提交成功（已入会话）后登记。 */
   push(messageId: string, mode: SubmitMode): void {

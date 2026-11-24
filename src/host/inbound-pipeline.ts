@@ -17,7 +17,8 @@ import type { InboundBody, InboundFileRef, InboundImageRef } from './inbound.ts'
 import { parseCardAction, parseMessageEvent } from './inbound.ts';
 import type { LarkBridge } from './bridge.ts';
 import type { AcceptResult, OwnerFile, OwnerImage, OwnerMessageDraft } from './protocol.ts';
-import { addReaction, REACTION_ACK, REACTION_DONE } from './reactions.ts';
+import type { ClaimOutcome } from './claim.ts';
+import { addReaction, REACTION_ACK } from './reactions.ts';
 import { SeenStore } from './state/seen.ts';
 
 const TEXT_MAX = 20_000;
@@ -47,7 +48,9 @@ export interface InboundPipelineOptions {
    * 先给提醒认领：有问题/授权在等主人时，这条文本是作答，不再进会话。
    * 只对纯文本生效（带媒体/文件的草稿不当作答）。
    */
-  claim?: (draft: OwnerMessageDraft) => boolean;
+  claim?: (draft: OwnerMessageDraft) => ClaimOutcome | undefined;
+  /** 提醒作答已经结算时补完成标记（与桥/独立模式共用同一条去重路径）。 */
+  markDone?: (platformMessageId: string) => void;
   /**
    * 先给提醒认领卡片回调：独立模式的提问卡不是核心交付，核心桥认不出来。
    * 返回 true 表示已消化，不再交给桥。
@@ -73,6 +76,7 @@ export class InboundPipeline {
   readonly #onOwner: ((sender: string, chatId: string, chatType: 'p2p' | 'group') => void) | undefined;
   readonly #now: () => number;
   readonly #claim: InboundPipelineOptions['claim'];
+  readonly #markDone: InboundPipelineOptions['markDone'];
   readonly #claimCard: InboundPipelineOptions['claimCard'];
   readonly #fallback: InboundPipelineOptions['fallback'];
   #chain: Promise<void> = Promise.resolve();
@@ -90,6 +94,7 @@ export class InboundPipeline {
     this.#onOwner = options.onOwner;
     this.#now = options.now ?? Date.now;
     this.#claim = options.claim;
+    this.#markDone = options.markDone;
     this.#claimCard = options.claimCard;
     this.#fallback = options.fallback;
   }
@@ -195,9 +200,11 @@ export class InboundPipeline {
     if (draft === null) return;
 
     // 提醒的作答先于一切：主人回「批准」「2」时不该把它当聊天送进会话。
-    // 这类作答在认领时就同步结算完（不是派活），当场补完成标记；会话模式要等回答送达。
-    if (this.#claim?.(draft) === true) {
-      if (this.#typing) void addReaction(this.#api, message.messageId, REACTION_DONE);
+    // 只有**已结算**的作答当场补完成标记；多题只答一半时提醒还在等（回了格式提示），
+    // 那条消息不算处理完，不能盖 DONE。普通消息的完成标记由回答送达时补。
+    const claim = this.#claim?.(draft);
+    if (claim !== undefined) {
+      if (claim === 'settled') this.#markDone?.(message.messageId);
       return;
     }
 

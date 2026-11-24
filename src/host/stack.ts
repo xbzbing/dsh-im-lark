@@ -6,6 +6,7 @@
  * 由入口统一处理，`stack` 只保证「有一份可用的桥」。
  */
 
+import type { ClaimOutcome } from './claim.ts';
 import type { LocalSettings, NormalizedConfig } from './config.ts';
 import { createLarkBridge } from './bridge.ts';
 import type { LarkBridge } from './bridge.ts';
@@ -49,7 +50,7 @@ export interface LarkStackOptions {
    * 入站文本先给提醒认领：返回 true 表示这条消息是问题/授权的作答，不再进会话。
    * 没有提醒在等时恒为 false。
    */
-  claim?: (draft: OwnerMessageDraft) => boolean;
+  claim?: (draft: OwnerMessageDraft) => ClaimOutcome | undefined;
   /** 卡片回调先给提醒认领：独立模式的提问卡不是核心交付。 */
   claimCard?: (action: LarkCardAction) => boolean | Promise<boolean>;
   ownerLabel?: () => string;
@@ -141,6 +142,7 @@ export function createLarkStack(options: LarkStackOptions): LarkStack {
     ...(options.isOwner === undefined ? {} : { isOwner: options.isOwner }),
     ...(options.onOwner === undefined ? {} : { onOwner: options.onOwner }),
     ...(options.claim === undefined ? {} : { claim: options.claim }),
+    markDone,
     ...(options.claimCard === undefined ? {} : { claimCard: options.claimCard }),
     ...(options.now === undefined ? {} : { now: options.now }),
     fallback: (message, draft) => standalone.handleInbound(message, draft),
