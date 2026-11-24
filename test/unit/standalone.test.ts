@@ -34,6 +34,7 @@ async function harness(
     controller?: Partial<StandaloneController> | null;
     listRows?: Array<Record<string, unknown>>;
     workspaceId?: () => string;
+    markDone?: (platformMessageId: string) => void;
   } = {},
 ): Promise<Harness> {
   const deliveries: OutboundInput[] = [];
@@ -88,6 +89,7 @@ async function harness(
     workspaceId: options.workspaceId,
     ownerLabel: () => 'abcdef',
     now: () => 1_000,
+    ...(options.markDone === undefined ? {} : { markDone: options.markDone }),
   });
 
   return { chat, deliveries, prompts, created, createArgs, cancelled, bindings, owners };
@@ -381,3 +383,62 @@ test('时长格式化：秒与分', () => {
 function bindingsOf(status: { bound: boolean; sessionId?: string }): string | undefined {
   return status.bound ? status.sessionId : undefined;
 }
+
+test('独立模式：回合结束回复成功后给原消息补 DONE，提交入队不提前打', async () => {
+  await withTempDir(async (dir) => {
+    const marked: string[] = [];
+    const { chat } = await harness(dir.path, { markDone: (id) => marked.push(id) });
+    const message = inbound();
+    await chat.handleInbound(message, draftOf(message, '写个函数'));
+    assert.deepEqual(marked, [], '提交入队不算完成');
+
+    chat.handleEvent('s_1', { type: 'turn/start', data: {} });
+    chat.handleEvent('s_1', { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '答' }] } } });
+    chat.handleEvent('s_1', { type: 'turn/end', data: {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.deepEqual(marked, [message.messageId]);
+  });
+});
+
+test('独立模式：回合没给回答不打 DONE，队列对齐到下一条被回答的消息', async () => {
+  await withTempDir(async (dir) => {
+    const marked: string[] = [];
+    const { chat } = await harness(dir.path, { markDone: (id) => marked.push(id) });
+
+    const first = inbound();
+    await chat.handleInbound(first, draftOf(first, '没回答的消息'));
+    chat.handleEvent('s_1', { type: 'turn/start', data: {} });
+    chat.handleEvent('s_1', { type: 'turn/end', data: {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(marked, [], '空回答不给假的完成信号');
+
+    const second = inbound();
+    await chat.handleInbound(second, draftOf(second, '有回答的'));
+    chat.handleEvent('s_1', { type: 'turn/start', data: {} });
+    chat.handleEvent('s_1', { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '好' }] } } });
+    chat.handleEvent('s_1', { type: 'turn/end', data: {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(marked, [second.messageId], '标记对齐到真正被回答的那条');
+  });
+});
+
+test('独立模式：命令处理完当场补 DONE', async () => {
+  await withTempDir(async (dir) => {
+    const marked: string[] = [];
+    const { chat } = await harness(dir.path, { markDone: (id) => marked.push(id) });
+    const message = inbound();
+    await chat.handleInbound(message, draftOf(message, '/help'));
+    assert.deepEqual(marked, [message.messageId]);
+  });
+});
+
+test('独立模式：提交失败的通知不打 DONE', async () => {
+  await withTempDir(async (dir) => {
+    const marked: string[] = [];
+    const { chat } = await harness(dir.path, { controller: null, markDone: (id) => marked.push(id) });
+    const message = inbound();
+    await chat.handleInbound(message, draftOf(message, '发不出去'));
+    assert.deepEqual(marked, []);
+  });
+});

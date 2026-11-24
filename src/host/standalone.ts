@@ -118,6 +118,11 @@ export interface StandaloneOptions {
   ownerLabel?: () => string;
   /** 提交超时：只约束「受理前」的等待。 */
   submitTimeoutMs?: number;
+  /**
+   * 这一轮真正结束（回答已发出）或命令处理完后，给触发它的原消息补 `DONE`
+   * （入参是平台消息 id）。是否打表情（面板开关）由注入方判断。
+   */
+  markDone?: (platformMessageId: string) => void;
 }
 
 export interface StandaloneStatus {
@@ -148,9 +153,16 @@ export class StandaloneChat {
   readonly #now: () => number;
   readonly #ownerLabel: () => string;
   readonly #submitTimeoutMs: number;
+  readonly #markDone: ((platformMessageId: string) => void) | undefined;
 
   #chatId = '';
   #lastUserMessageId: string | undefined;
+  /**
+   * 已提交、等回合结束的消息（平台 id，按提交顺序）。完成标记按这个队列对齐而不是
+   * 用 `#lastUserMessageId`：排队模式下后一条先入队，用「最近一条」会给错的消息盖
+   * `DONE`。回合没给回答时丢弃队头（不打假的完成标记），保持后续对齐。
+   */
+  readonly #pendingMessageIds: string[] = [];
   #running = false;
   #answer = '';
   #startedAt = 0;
@@ -170,6 +182,7 @@ export class StandaloneChat {
     this.#now = options.now ?? Date.now;
     this.#ownerLabel = options.ownerLabel ?? (() => '');
     this.#submitTimeoutMs = options.submitTimeoutMs ?? SUBMIT_TIMEOUT_MS;
+    this.#markDone = options.markDone;
   }
 
   status(): StandaloneStatus {
@@ -198,11 +211,15 @@ export class StandaloneChat {
     const command = parseCommand(text);
     if (command !== null) {
       await this.#runCommand(command);
+      // 命令当场就答完了：回复发出即处理结束，补完成标记（失败的回复也一样，命令本身已处理）。
+      this.#markDone?.(message.messageId);
       return;
     }
 
     const showNotice = await this.#submit(text, draft);
+    // 提交失败的通知不是完成：只留「收到」，不盖 DONE；回答要等回合结束。
     if (showNotice !== null) await this.#reply(showNotice);
+    else this.#pendingMessageIds.push(message.messageId);
   }
 
   /** `session/event`：跟踪绑定会话的回合，结束后把回答发回飞书。 */
@@ -234,11 +251,17 @@ export class StandaloneChat {
         this.#running = false;
         const answer = this.#answer.trim();
         this.#answer = '';
+        const pending = this.#pendingMessageIds.shift();
         if (answer === '') return;
         this.#lastTrace = { model: this.#model, durationMs: Math.max(0, this.#now() - this.#startedAt), at: this.#now() };
-        void this.#reply(answer, this.#lastTrace).catch((error: unknown) => {
-          this.#logger.warn?.('独立模式回复失败', errorText(error));
-        });
+        // 回答送达成功才算这一轮结束；发送失败只留「收到」，不给假信号。
+        void this.#reply(answer, this.#lastTrace)
+          .then(() => {
+            if (pending !== undefined) this.#markDone?.(pending);
+          })
+          .catch((error: unknown) => {
+            this.#logger.warn?.('独立模式回复失败', errorText(error));
+          });
         return;
       }
       default:

@@ -17,6 +17,7 @@ import { createSdkClient } from './lark/sdk.ts';
 import type { LarkCredentials } from './lark/types.ts';
 import { OutboundChannel } from './outbound.ts';
 import type { BridgeHealth, OwnerMessageDraft } from './protocol.ts';
+import { addReaction, REACTION_DONE } from './reactions.ts';
 import type { Card } from './cards.ts';
 import type { LarkCardAction } from './lark/types.ts';
 import type { LarkEventSink } from './runtime.ts';
@@ -86,6 +87,13 @@ export function createLarkStack(options: LarkStackOptions): LarkStack {
       logger,
     });
 
+  // 「处理状态表情」开关同时管完成标记：关掉时收到的 Get 与完成的 DONE 都不打。
+  const typing = options.typing ?? options.config.typingIndicator;
+  const markDone = (platformMessageId: string): void => {
+    if (!typing) return;
+    void addReaction(api, platformMessageId, REACTION_DONE);
+  };
+
   const bridge = createLarkBridge({
     account: app.appId,
     api,
@@ -94,6 +102,7 @@ export function createLarkStack(options: LarkStackOptions): LarkStack {
     ...(options.now === undefined ? {} : { now: options.now }),
     ...(options.health === undefined ? {} : { health: options.health }),
     ...(options.chatFor === undefined ? {} : { chatFor: options.chatFor }),
+    markDone,
   });
 
   const standaloneOutbound = new OutboundChannel({
@@ -113,13 +122,14 @@ export function createLarkStack(options: LarkStackOptions): LarkStack {
     ...(options.workspaceId === undefined ? {} : { workspaceId: options.workspaceId }),
     ...(options.ownerLabel === undefined ? {} : { ownerLabel: options.ownerLabel }),
     ...(options.now === undefined ? {} : { now: options.now }),
+    markDone,
   });
 
   const pipeline = new InboundPipeline({
     api,
     bridge,
     logger,
-    typing: options.typing ?? options.config.typingIndicator,
+    typing,
     ...(options.botOpenId === undefined ? {} : { botOpenId: options.botOpenId }),
     ...(options.ownerOpenId === undefined ? {} : { ownerOpenId: options.ownerOpenId }),
     ...(options.features === undefined ? {} : { features: options.features }),
