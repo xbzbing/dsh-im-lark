@@ -47,8 +47,8 @@ export interface LarkStackOptions {
   /** 独立模式的默认工作区 id（插件自动创建）；空串表示用宿主默认位置。 */
   workspaceId?: () => string;
   /**
-   * 入站文本先给提醒认领：返回 true 表示这条消息是问题/授权的作答，不再进会话。
-   * 没有提醒在等时恒为 false。
+   * 入站文本先给提醒认领：返回 `settled` / `unsettled` 表示这条消息是问题/授权的作答
+   * （前者已结算、后者还在等后续作答），都不再进会话；`undefined` 表示不是作答。
    */
   claim?: (draft: OwnerMessageDraft) => ClaimOutcome | undefined;
   /** 卡片回调先给提醒认领：独立模式的提问卡不是核心交付。 */

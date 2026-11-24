@@ -191,7 +191,7 @@ export class InboundPipeline {
    * `DONE` 不在这里打：`receive` 返回 accepted 只代表消息入队，任务是之后异步跑的
    * （核心 emit 事件即返回、独立模式提交即返回），入队就打会给「已完成」的假信号。
    * 完成标记在回答真正送达时补（bridge 的交付路径、独立模式的回合结束），
-   * 唯一例外是提醒作答：认领时已同步结算，当场打。
+   * 唯一例外是提醒作答：只有**结算成功**时当场打，没答完（`unsettled`）不打。
    */
   async #processMessage(message: LarkInboundMessage, body: InboundBody): Promise<void> {
     if (this.#typing) await addReaction(this.#api, message.messageId, REACTION_ACK);

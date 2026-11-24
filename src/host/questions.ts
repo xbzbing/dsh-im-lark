@@ -266,7 +266,8 @@ export class QuestionBroker {
   }
 
   /**
-   * 入站文本尝试当作作答；返回 true 表示这条消息已被消化（不再进普通消息路径）。
+   * 入站文本尝试当作作答；返回 `settled`（已结算）、`unsettled`（认下了但还在等后续
+   * 作答，如多题只答一半回了格式提示），两者都不再进普通消息路径；`undefined` 表示不是作答。
    * 多条待答时认**最后一条**：主人在飞书里看到的是最近发出的那条提醒。
    */
   reply(text: string): ClaimOutcome | undefined {
