@@ -6,7 +6,8 @@ import type { LocalSettings } from '../../src/host/config.ts';
 import type { LarkInboundMessage } from '../../src/host/lark/types.ts';
 import type { OutboundChannel, OutboundInput } from '../../src/host/outbound.ts';
 import type { OwnerMessageDraft } from '../../src/host/protocol.ts';
-import { StandaloneChat, buildContent, formatDuration, parseCommand } from '../../src/host/standalone.ts';
+import { parseCommand } from '../../src/host/standalone-command.ts';
+import { StandaloneChat, buildContent, formatDuration } from '../../src/host/standalone.ts';
 import type { StandaloneController } from '../../src/host/standalone.ts';
 import { DirectBindingStore, OwnerStore } from '../../src/host/state/direct.ts';
 import { withTempDir } from './helpers/temp.ts';
@@ -35,6 +36,8 @@ async function harness(
     listRows?: Array<Record<string, unknown>>;
     workspaceId?: () => string;
     markDone?: (platformMessageId: string) => void;
+    /** 出站是否报错（模拟平台发送失败）。 */
+    deliverError?: string;
   } = {},
 ): Promise<Harness> {
   const deliveries: OutboundInput[] = [];
@@ -46,6 +49,9 @@ async function harness(
   const outbound = {
     async deliver(input: OutboundInput) {
       deliveries.push(input);
+      if (options.deliverError !== undefined) {
+        return { messageIds: [], messagesSent: 0, errorCode: 'other', error: options.deliverError };
+      }
       return { messageIds: [`om_${deliveries.length}`], messagesSent: 1 };
     },
   } as unknown as OutboundChannel;
@@ -440,5 +446,124 @@ test('独立模式：提交失败的通知不打 DONE', async () => {
     const message = inbound();
     await chat.handleInbound(message, draftOf(message, '发不出去'));
     assert.deepEqual(marked, []);
+  });
+});
+
+test('独立模式：排队模式两条在队时，一条 turn/end 只结算队头', async () => {
+  await withTempDir(async (dir) => {
+    const marked: string[] = [];
+    const { chat } = await harness(dir.path, { settings: { directBusyMode: 'queue' }, markDone: (id) => marked.push(id) });
+    const first = inbound();
+    const second = inbound();
+    await chat.handleInbound(first, draftOf(first, '第一条'));
+    await chat.handleInbound(second, draftOf(second, '第二条'));
+
+    chat.handleEvent('s_1', { type: 'turn/start', data: {} });
+    chat.handleEvent('s_1', { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '答一' }] } } });
+    chat.handleEvent('s_1', { type: 'turn/end', data: {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(marked, [first.messageId], '第二条还没轮到');
+
+    chat.handleEvent('s_1', { type: 'turn/start', data: {} });
+    chat.handleEvent('s_1', { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '答二' }] } } });
+    chat.handleEvent('s_1', { type: 'turn/end', data: {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(marked, [first.messageId, second.messageId]);
+  });
+});
+
+test('独立模式：插话模式下两条被同一轮吸收，一次 turn/end 一起结算', async () => {
+  await withTempDir(async (dir) => {
+    const marked: string[] = [];
+    const { chat } = await harness(dir.path, { settings: { directBusyMode: 'steer' }, markDone: (id) => marked.push(id) });
+    const first = inbound();
+    await chat.handleInbound(first, draftOf(first, '第一条'));
+
+    chat.handleEvent('s_1', { type: 'turn/start', data: {} });
+    // 回合进行中又发一条：steer 在下一个步骤边界被这一轮吸收，不会再有自己的 turn/end。
+    const second = inbound();
+    await chat.handleInbound(second, draftOf(second, '插一句'));
+
+    chat.handleEvent('s_1', { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '两条一起答' }] } } });
+    chat.handleEvent('s_1', { type: 'turn/end', data: {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(marked, [first.messageId, second.messageId], '两条都被这一轮回答，都要结算');
+  });
+});
+
+test('独立模式：回复发送失败时不打 DONE（即使有回答）', async () => {
+  await withTempDir(async (dir) => {
+    const marked: string[] = [];
+    const { chat } = await harness(dir.path, { deliverError: '平台限流', markDone: (id) => marked.push(id) });
+    const message = inbound();
+    await chat.handleInbound(message, draftOf(message, '发不回来'));
+    chat.handleEvent('s_1', { type: 'turn/start', data: {} });
+    chat.handleEvent('s_1', { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '答' }] } } });
+    chat.handleEvent('s_1', { type: 'turn/end', data: {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(marked, []);
+  });
+});
+
+test('独立模式：/new 清空待结算队列，被放弃的消息不会被下一轮错认', async () => {
+  await withTempDir(async (dir) => {
+    const marked: string[] = [];
+    const { chat } = await harness(dir.path, { markDone: (id) => marked.push(id) });
+
+    const stale = inbound();
+    await chat.handleInbound(stale, draftOf(stale, '会被放弃的'));
+    const command = inbound();
+    await chat.handleInbound(command, draftOf(command, '/new'));
+
+    // 旧会话的 turn/end 因绑定已清空被丢弃；残留条目若不清，会被下一轮顶替。
+    chat.handleEvent('s_1', { type: 'turn/start', data: {} });
+    chat.handleEvent('s_1', { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '旧会话的答' }] } } });
+    chat.handleEvent('s_1', { type: 'turn/end', data: {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // /new 之后的下一条会建新会话 s_2；它的回合只能结算它自己。
+    const fresh = inbound();
+    await chat.handleInbound(fresh, draftOf(fresh, '新会话里问'));
+    chat.handleEvent('s_2', { type: 'turn/start', data: {} });
+    chat.handleEvent('s_2', { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '答' }] } } });
+    chat.handleEvent('s_2', { type: 'turn/end', data: {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.deepEqual(marked, [command.messageId, fresh.messageId]);
+    assert.ok(!marked.includes(stale.messageId), '被放弃的消息不能盖完成标记');
+  });
+});
+
+test('独立模式：/sessions 切换清空待结算队列', async () => {
+  await withTempDir(async (dir) => {
+    const marked: string[] = [];
+    const { chat } = await harness(dir.path, {
+      listRows: [
+        { sessionId: 's_1', projections: { values: { title: '一' } } },
+        { sessionId: 's_2', projections: { values: { title: '二' } } },
+      ],
+      markDone: (id) => marked.push(id),
+    });
+
+    const stale = inbound();
+    await chat.handleInbound(stale, draftOf(stale, '旧会话里问的'));
+    const command = inbound();
+    await chat.handleInbound(command, draftOf(command, '/sessions 2'));
+
+    // 切到 s_2 后 s_1 的 turn/end 被会话校验丢弃；残留条目不能留到新会话的回合。
+    chat.handleEvent('s_1', { type: 'turn/start', data: {} });
+    chat.handleEvent('s_1', { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '旧会话的答' }] } } });
+    chat.handleEvent('s_1', { type: 'turn/end', data: {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const fresh = inbound();
+    await chat.handleInbound(fresh, draftOf(fresh, '在切过去的会话里问'));
+    chat.handleEvent('s_2', { type: 'turn/start', data: {} });
+    chat.handleEvent('s_2', { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '答' }] } } });
+    chat.handleEvent('s_2', { type: 'turn/end', data: {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.deepEqual(marked, [command.messageId, fresh.messageId]);
+    assert.ok(!marked.includes(stale.messageId));
   });
 });

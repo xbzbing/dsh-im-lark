@@ -11,6 +11,9 @@
 
 import { randomUUID } from 'node:crypto';
 
+import { DoneAlign } from './done-align.ts';
+import type { StandaloneCommand } from './standalone-command.ts';
+import { HELP_TEXT, parseCommand } from './standalone-command.ts';
 import type { LarkLogger } from './lark/connection.ts';
 import type { LarkInboundMessage } from './lark/types.ts';
 import type { OutboundChannel } from './outbound.ts';
@@ -48,61 +51,6 @@ export interface StandaloneController {
   list?(request: Record<string, unknown>, signal: AbortSignal): Promise<{ items?: readonly SessionRow[] }>;
   rename?(request: { sessionId: string; title: string }): Promise<unknown>;
 }
-
-export type StandaloneCommand =
-  | { kind: 'help' }
-  | { kind: 'new' }
-  | { kind: 'sessions'; index?: number }
-  | { kind: 'status' }
-  | { kind: 'stop' }
-  | { kind: 'trace' }
-  | { kind: 'send'; text: string }
-  | { kind: 'unknown'; name: string };
-
-/** 解析以 `/` 开头的文本；不是命令返回 null。 */
-export function parseCommand(input: string): StandaloneCommand | null {
-  const trimmed = input.trim();
-  if (!trimmed.startsWith('/')) return null;
-
-  const [head = '', ...rest] = trimmed.slice(1).split(/\s+/);
-  const name = head.toLowerCase();
-  const tail = rest.join(' ').trim();
-
-  switch (name) {
-    case '':
-    case 'help':
-      return { kind: 'help' };
-    case 'new':
-      return { kind: 'new' };
-    case 'status':
-      return { kind: 'status' };
-    case 'stop':
-      return { kind: 'stop' };
-    case 'trace':
-      return { kind: 'trace' };
-    case 'send':
-      return tail === '' ? { kind: 'help' } : { kind: 'send', text: tail };
-    case 'sessions': {
-      if (tail === '') return { kind: 'sessions' };
-      const index = Number(tail);
-      return Number.isInteger(index) && index > 0 ? { kind: 'sessions', index } : { kind: 'sessions' };
-    }
-    default:
-      return { kind: 'unknown', name };
-  }
-}
-
-export const HELP_TEXT = [
-  '我是这个工作区的飞书入口。可用命令：',
-  '',
-  '`/new` 开新会话',
-  '`/sessions` 查看最近会话；`/sessions 2` 切到第 2 个',
-  '`/status` 当前会话与连接状态',
-  '`/stop` 中止正在跑的回合',
-  '`/trace` 上一条回答的模型与耗时',
-  '`/send <文本>` 不经过模型，直接发一段文本',
-  '`/help` 这份说明',
-].join('\n');
 
 export interface StandaloneOptions {
   outbound: OutboundChannel;
@@ -158,11 +106,11 @@ export class StandaloneChat {
   #chatId = '';
   #lastUserMessageId: string | undefined;
   /**
-   * 已提交、等回合结束的消息（平台 id，按提交顺序）。完成标记按这个队列对齐而不是
-   * 用 `#lastUserMessageId`：排队模式下后一条先入队，用「最近一条」会给错的消息盖
-   * `DONE`。回合没给回答时丢弃队头（不打假的完成标记），保持后续对齐。
+   * 已提交、等回合结束的消息（按提交顺序对齐）。
+   * 规则与宿主回合语义见 `done-align.ts`：不用 `#lastUserMessageId` 结算，那会把
+   * 完成标记盖到没被回答的消息上。
    */
-  readonly #pendingMessageIds: string[] = [];
+  readonly #align = new DoneAlign();
   #running = false;
   #answer = '';
   #startedAt = 0;
@@ -219,7 +167,7 @@ export class StandaloneChat {
     const showNotice = await this.#submit(text, draft);
     // 提交失败的通知不是完成：只留「收到」，不盖 DONE；回答要等回合结束。
     if (showNotice !== null) await this.#reply(showNotice);
-    else this.#pendingMessageIds.push(message.messageId);
+    else this.#align.push(message.messageId, this.#busyMode());
   }
 
   /** `session/event`：跟踪绑定会话的回合，结束后把回答发回飞书。 */
@@ -251,13 +199,15 @@ export class StandaloneChat {
         this.#running = false;
         const answer = this.#answer.trim();
         this.#answer = '';
-        const pending = this.#pendingMessageIds.shift();
+        // 无论有没有回答都结算：这一轮已经消耗掉这些消息，留在队里只会被下一轮错认。
+        const settled = this.#align.settle();
         if (answer === '') return;
         this.#lastTrace = { model: this.#model, durationMs: Math.max(0, this.#now() - this.#startedAt), at: this.#now() };
-        // 回答送达成功才算这一轮结束；发送失败只留「收到」，不给假信号。
+        // 回答真正发出去才算这一轮结束；发送失败（含没有目标会话）只留「收到」，不给假信号。
         void this.#reply(answer, this.#lastTrace)
-          .then(() => {
-            if (pending !== undefined) this.#markDone?.(pending);
+          .then((delivered) => {
+            if (!delivered) return;
+            for (const messageId of settled) this.#markDone?.(messageId);
           })
           .catch((error: unknown) => {
             this.#logger.warn?.('独立模式回复失败', errorText(error));
@@ -272,6 +222,8 @@ export class StandaloneChat {
   async reset(): Promise<void> {
     this.#running = false;
     this.#answer = '';
+    // 旧会话的回合结束会被会话校验丢弃，残留的待结算条目只会被下一轮错认。
+    this.#align.clear();
     await this.#bindings.clear();
   }
 
@@ -413,6 +365,8 @@ export class StandaloneChat {
       const id = typeof target?.sessionId === 'string' ? target.sessionId : '';
       if (target === undefined || id === '') return `没有第 ${index} 个会话。`;
       await this.#bindings.set({ sessionId: id, workspaceId: '', ...(sessionTitle(target) === '' ? {} : { title: sessionTitle(target) }) });
+      // 换会话后旧会话的 turn/end 不再被接受，残留条目会错挂到新会话的回合上。
+      this.#align.clear();
       return `已切到：${sessionTitle(target) || id.slice(0, 8)}`;
     }
 
@@ -436,7 +390,8 @@ export class StandaloneChat {
     return this.#settings().directBusyMode === 'queue' ? 'queue' : 'steer';
   }
 
-  async #reply(text: string, trace?: TraceRecord | null): Promise<void> {
+  /** 发一段文本；返回是否真的发出去了（没有目标会话或平台报错都算没送到）。 */
+  async #reply(text: string, trace?: TraceRecord | null): Promise<boolean> {
     const settings = this.#settings();
     const footer = settings.replyStatus && trace !== undefined && trace !== null ? statusLine(trace) : '';
     const body = footer === '' ? text : `${text}\n\n---\n${footer}`;
@@ -445,7 +400,7 @@ export class StandaloneChat {
     const chatId = this.#chatId !== '' ? this.#chatId : (await this.#owners.get())?.chatId ?? '';
     if (chatId === '') {
       this.#logger.warn?.('独立模式回复没有目标会话，已丢弃');
-      return;
+      return false;
     }
 
     const receipt = await this.#outbound.deliver({
@@ -456,7 +411,9 @@ export class StandaloneChat {
     });
     if (receipt.errorCode !== undefined) {
       this.#logger.warn?.('独立模式回复没有发出去', receipt.error ?? receipt.errorCode);
+      return false;
     }
+    return true;
   }
 }
 
