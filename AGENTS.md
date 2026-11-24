@@ -25,7 +25,8 @@
 - `inbound.ts` / `outbound.ts`：事件进来、消息出去，纯转换 + 限速
 - `cards.ts`：卡片 JSON 构造与 PATCH 节流
 - `bridge.ts`：`my-superagent/v1` 的 provider / handle 实现
-- `standalone.ts`：独立会话与文本命令
+- `standalone.ts`：独立会话与文本命令（解析在 `standalone-command.ts`）
+- `reactions.ts` / `done-align.ts`：表情反馈的取值与「哪条消息答完了」的对齐
 - `panel-*.ts`：面板 RPC 与 React
 
 新增能力先想清楚落在哪一层，别往 `index.ts` 里堆。
@@ -49,7 +50,7 @@
 - 文本体 ≤ 150 KB、卡片 ≤ 30 KB；超长先切段，别等平台报 230025。
 - 发消息 5 QPS（按用户 / 按群），走内置限速，429 用 `retryDelayMs` 退避。
 - 卡片 PATCH 只在 `interactive` 类型、14 天内、单卡 5 QPS 有效，且要 `config.update_multi: true`。
-- 没有官方「正在输入」接口 → 用表情兜底：收到打 `Get`；回答真正送达后才在原消息追加 `DONE`（入队不算完成，`Get` 不撤），失败静默。
+- 没有官方「正在输入」接口 → 用表情兜底：收到打 `Get`；回答真正送达后才在原消息追加 `DONE`（入队不算完成，提醒作答例外——认领时已结算），失败静默；同一消息的 `DONE` 在栈层去重。
 - 长连接不广播：多实例只有一个收到事件，不要设计成集群消费。
 
 ## 验证阶梯

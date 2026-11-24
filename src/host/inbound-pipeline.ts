@@ -17,18 +17,12 @@ import type { InboundBody, InboundFileRef, InboundImageRef } from './inbound.ts'
 import { parseCardAction, parseMessageEvent } from './inbound.ts';
 import type { LarkBridge } from './bridge.ts';
 import type { AcceptResult, OwnerFile, OwnerImage, OwnerMessageDraft } from './protocol.ts';
-import { addReaction, REACTION_ACK } from './reactions.ts';
+import { addReaction, REACTION_ACK, REACTION_DONE } from './reactions.ts';
 import { SeenStore } from './state/seen.ts';
 
 const TEXT_MAX = 20_000;
 
-/**
- * 入站只负责「收到」标记（`Get`，取值与打点约定见 `reactions.ts`）。
- * `DONE` 不在这里打：`receive` 返回 accepted 只代表消息入队，任务是之后
- * 异步跑的（核心 emit 事件即返回、独立模式提交即返回），入队就打会给
- * 「已完成」的假信号。完成标记由回答真正送达时补（bridge 的交付路径与
- * 独立模式的回合结束）。
- */
+/** 图片类型白名单：只有这几种能当 `image` 交给核心。 */
 const KNOWN_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 
 export interface InboundPipelineOptions {
@@ -187,6 +181,13 @@ export class InboundPipeline {
     });
   }
 
+  /**
+   * 入站只负责「收到」标记（`Get`，取值与打点约定见 `reactions.ts`）。
+   * `DONE` 不在这里打：`receive` 返回 accepted 只代表消息入队，任务是之后异步跑的
+   * （核心 emit 事件即返回、独立模式提交即返回），入队就打会给「已完成」的假信号。
+   * 完成标记在回答真正送达时补（bridge 的交付路径、独立模式的回合结束），
+   * 唯一例外是提醒作答：认领时已同步结算，当场打。
+   */
   async #processMessage(message: LarkInboundMessage, body: InboundBody): Promise<void> {
     if (this.#typing) await addReaction(this.#api, message.messageId, REACTION_ACK);
 
@@ -194,7 +195,11 @@ export class InboundPipeline {
     if (draft === null) return;
 
     // 提醒的作答先于一切：主人回「批准」「2」时不该把它当聊天送进会话。
-    if (this.#claim?.(draft) === true) return;
+    // 这类作答在认领时就同步结算完（不是派活），当场补完成标记；会话模式要等回答送达。
+    if (this.#claim?.(draft) === true) {
+      if (this.#typing) void addReaction(this.#api, message.messageId, REACTION_DONE);
+      return;
+    }
 
     const result: AcceptResult = await this.#bridge.receive(draft);
     if (!result.accepted && result.reason === 'unknown' && this.#fallback !== undefined) {

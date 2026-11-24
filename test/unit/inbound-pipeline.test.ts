@@ -17,6 +17,8 @@ interface SetupOptions {
   downloadFails?: boolean;
   isOwner?: (sender: string) => boolean | undefined;
   claimCard?: (action: { value: Record<string, unknown>; option?: unknown }) => boolean;
+  claim?: (draft: OwnerMessageDraft) => boolean;
+  reactionFails?: boolean;
 }
 
 function setup(options: SetupOptions = {}) {
@@ -39,6 +41,7 @@ function setup(options: SetupOptions = {}) {
     },
     async recallMessage() {},
     async addReaction({ emojiType }) {
+      if (options.reactionFails === true) throw new Error('表情不可用');
       reactions.push(emojiType);
       return { reactionId: `re_${reactions.length}` };
     },
@@ -86,6 +89,7 @@ function setup(options: SetupOptions = {}) {
     features: () => options.features ?? [],
     ...(options.isOwner === undefined ? {} : { isOwner: options.isOwner }),
     ...(options.claimCard === undefined ? {} : { claimCard: options.claimCard }),
+    ...(options.claim === undefined ? {} : { claim: options.claim }),
   });
 
   return { pipeline, bridge, api, received, answers, reactions, removed, patches, downloads };
@@ -467,4 +471,22 @@ test('流水线：队列按到达顺序处理', async () => {
     received.map((draft) => draft.text),
     ['第一条', '第二条', '第三条'],
   );
+});
+
+test('流水线：提醒作答（claim）当场补 DONE，不等人会话', async () => {
+  const { pipeline, reactions, received } = setup({ claim: () => true });
+  pipeline.handleMessage(messageEvent({ text: '批准' }));
+  await pipeline.drain();
+
+  assert.deepEqual(received, [], '作答不进会话');
+  assert.deepEqual(reactions, ['Get', 'DONE']);
+});
+
+test('流水线：表情接口不可用时静默降级，消息照常处理', async () => {
+  const { pipeline, reactions, received } = setup({ reactionFails: true });
+  pipeline.handleMessage(messageEvent({ text: '表情挂了也要处理' }));
+  await pipeline.drain();
+
+  assert.deepEqual(reactions, []);
+  assert.equal(received.length, 1, '表情失败不影响交付');
 });

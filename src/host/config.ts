@@ -51,7 +51,7 @@ export interface PluginConfig {
   domain?: LarkDomain;
   /** 单条消息上限，按字符计（默认 2000）。 */
   maxText?: number;
-  /** 是否在用户消息上加「收到」表情（处理完追加 DONE），默认开。 */
+  /** 是否在用户消息上加「收到」表情 Get：收到就打，回答送达后再追加 DONE。默认开。 */
   typingIndicator?: boolean;
   /** 独立模式建会话的工作区 id；空表示自动创建的默认工作区。 */
   directWorkspaceId?: string;
@@ -167,7 +167,7 @@ export interface LocalSettings {
   directBusyMode: BusyMode;
   /** 独立模式回复是否附加状态行。 */
   replyStatus: boolean;
-  /** 是否在用户消息上加「收到」表情（处理完追加 DONE）。 */
+  /** 是否在用户消息上加「收到」表情 Get：收到就打，回答送达后再追加 DONE。 */
   typingIndicator: boolean;
   /** 独立模式下有问题/授权在等主人时发飞书提醒。 */
   questionReminders: boolean;
