@@ -61,6 +61,11 @@ export interface BridgeDeps {
   health?: () => BridgeHealth;
   /** 重启后还没收到入站消息时，从本机镜像的 owner 找到会话。 */
   chatFor?: (sender: string) => string | undefined;
+  /**
+   * 这一轮正常收尾后，给触发它的原消息补 `DONE`（入参是平台消息 id，桥已翻译好）。
+   * 是否打表情（面板开关）由注入方判断；桥只在「完成且送达成功」时调用。
+   */
+  markDone?: (platformMessageId: string) => void;
 }
 
 export interface LarkBridge {
@@ -149,12 +154,16 @@ export function createLarkBridge(deps: BridgeDeps): LarkBridge {
       return failure(deliveryId, 'window-closed', '交付已过期，未发送');
     }
 
+    // 本轮正常收尾才补完成表情；判据见 completionTarget。
+    const doneTarget = completionTarget(delivery);
+
     const stream = delivery.stream;
     let streamOversized = false;
     if (stream !== undefined) {
       const detached = detachedStreams.get(stream.id);
       if (detached !== undefined) {
         // 已经用分条消息发过最终内容；后续修订再发只会刷屏。
+        if (doneTarget !== undefined) deps.markDone?.(doneTarget);
         return { deliveryId, status: 'sent', bridgeMessageId: detached, messagesSent: 0 };
       }
       const current = streams.get(stream.id);
@@ -172,6 +181,7 @@ export function createLarkBridge(deps: BridgeDeps): LarkBridge {
           try {
             await deps.api.patchCard({ messageId: current.messageId, card });
             remember(streams, stream.id, { revision: stream.revision, messageId: current.messageId }, MAX_DELIVERED);
+            if (doneTarget !== undefined) deps.markDone?.(doneTarget);
             return { deliveryId, status: 'sent', bridgeMessageId: current.messageId, messagesSent: 0 };
           } catch (error) {
             logger.warn?.('流式更新失败，改为重新发送', errorText(error));
@@ -224,6 +234,8 @@ export function createLarkBridge(deps: BridgeDeps): LarkBridge {
         ...(receipt.error === undefined ? {} : { error: receipt.error }),
       };
     }
+    // 回答送达成功才补 DONE；发送失败只留「收到」，不给假信号。
+    if (doneTarget !== undefined) deps.markDone?.(doneTarget);
 
     const messageId = receipt.messageIds[0];
     if (messageId !== undefined) {
@@ -269,6 +281,33 @@ export function createLarkBridge(deps: BridgeDeps): LarkBridge {
     return interactionDropped
       ? { ...sent, error: '交互卡片超过平台上限，已降级为纯文本；请在 Web 端作答' }
       : sent;
+  }
+
+  /**
+   * 这条交付是不是「这一轮的正常收尾」，是则给出要补 `DONE` 的原消息（平台 id）。
+   *
+   * 核心把完成、停滞提醒、孤儿收尾、分发回执都发成 `intent:'result'`，大多还带
+   * `inReplyTo`，桥不能只看 intent 就当完成（分发回执打 DONE 就是「任务还没完成却
+   * 盖了完成」的假信号）。临时判据，被单测钉死；核心补上权威回合结束信号
+   * （xbzbing/dsh-my-superagent#3）后整体替换：
+   * - 流式：`stream.final === true` 是权威完成信号（`LiveRelay.finish` 只在正常收尾调，
+   *   迟到的旧修订与进度修订都不是 final）；
+   * - 非流式（核心 `conversationGranularity='result'`）：正常收尾必带会话 `refs`，
+   *   而分发回执/提示/速办失败都不带；两个带 refs 的已知非完成项按固定标题排除。
+   */
+  const NON_COMPLETION_TITLES = new Set(['长时间没有动静', '这一轮没有正常收尾']);
+
+  function completionTarget(delivery: Delivery): string | undefined {
+    if (delivery.inReplyTo === undefined) return undefined;
+    const complete =
+      delivery.stream !== undefined
+        ? delivery.stream.final === true
+        : delivery.intent === 'result' &&
+          (delivery.refs ?? []).length > 0 &&
+          !NON_COMPLETION_TITLES.has(delivery.title);
+    if (!complete) return undefined;
+    // inReplyTo → 平台消息 id；不在这张表里（重启丢映射、非本桥消息）就不打。
+    return inbound.get(delivery.inReplyTo);
   }
 
   /** 核心传的是 sender/open_id；飞书发消息要 chat_id，用入站学到的映射翻译。 */

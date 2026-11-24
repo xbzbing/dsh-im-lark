@@ -30,7 +30,13 @@ interface Fixture {
  * `operations()` 需要在调用发生的那一刻知道「这条操作属于哪次交付」，所以
  * 这里包一层 `deliver`：调用期间把当前交付记下来，假 API 据此标注。
  */
-function fixture(options: { maxText?: number; chatFor?: (sender: string) => string | undefined } = {}): Fixture {
+function fixture(
+  options: {
+    maxText?: number;
+    chatFor?: (sender: string) => string | undefined;
+    markDone?: (platformMessageId: string) => void;
+  } = {},
+): Fixture {
   const operations: NativeOperation[] = [];
   const patches: unknown[] = [];
   const sentChatIds: string[] = [];
@@ -79,6 +85,7 @@ function fixture(options: { maxText?: number; chatFor?: (sender: string) => stri
     api,
     maxText: options.maxText ?? 2000,
     ...(options.chatFor === undefined ? {} : { chatFor: options.chatFor }),
+    ...(options.markDone === undefined ? {} : { markDone: options.markDone }),
   });
 
   const provider: BridgeProvider = {
@@ -550,4 +557,79 @@ test('桥：单选勾了多项时每次刷新卡片，改成一项即可通过',
   assert.deepEqual(core.answers[0]!.answers, [{ id: 'q1', selected: ['甲'] }]);
   assert.equal(patches.length, 2);
   assert.match(JSON.stringify(patches[1]), /已作答/u);
+});
+
+test('桥：流式终稿送达后给原消息补 DONE，进度修订不补', async () => {
+  const marked: string[] = [];
+  const { provider, setReply } = fixture({ markDone: (id) => marked.push(id) });
+  setReply('om_known');
+
+  const progress = await provider.deliver({
+    ...DELIVERY,
+    id: 'dlv_progress',
+    inReplyTo: 'oc_chat:om_known',
+    stream: { id: 's1', revision: 1, final: false },
+  });
+  assert.equal(progress.status, 'sent');
+  assert.deepEqual(marked, [], '进度修订不是完成');
+
+  const final = await provider.deliver({
+    ...DELIVERY,
+    id: 'dlv_final',
+    inReplyTo: 'oc_chat:om_known',
+    stream: { id: 's1', revision: 2, final: true },
+  });
+  assert.equal(final.status, 'sent');
+  assert.deepEqual(marked, ['om_known']);
+});
+
+test('桥：非流式收尾（带会话 refs）补 DONE；分发回执、停滞与孤儿提醒不补', async () => {
+  const marked: string[] = [];
+  const { provider, setReply } = fixture({ markDone: (id) => marked.push(id) });
+  setReply('om_known');
+  const refs = [{ kind: 'session' as const, id: 's_1', title: '会话' }];
+
+  // 核心 conversationGranularity='result' 时的非流式正常收尾：带会话 refs。
+  const done = await provider.deliver({ ...DELIVERY, id: 'dlv_done', inReplyTo: 'oc_chat:om_known', refs });
+  assert.equal(done.status, 'sent');
+  assert.deepEqual(marked, ['om_known']);
+
+  // 分发回执/提示：intent 也是 result、也带 inReplyTo，但没有 refs——任务还在别处跑。
+  const ack = await provider.deliver({ ...DELIVERY, id: 'dlv_ack', title: '', body: '已分发', inReplyTo: 'oc_chat:om_known' });
+  assert.equal(ack.status, 'sent');
+  assert.deepEqual(marked, ['om_known'], '分发回执不算完成');
+
+  // 两个带 refs 的已知非完成项按固定标题排除（停滞说任务可能还在跑，孤儿收尾说结果没送回来）。
+  for (const title of ['长时间没有动静', '这一轮没有正常收尾']) {
+    const notice = await provider.deliver({ ...DELIVERY, id: `dlv_${title}`, title, inReplyTo: 'oc_chat:om_known', refs });
+    assert.equal(notice.status, 'sent');
+  }
+  assert.deepEqual(marked, ['om_known'], '停滞/孤儿提醒不算完成');
+});
+
+test('桥：发送失败或 inReplyTo 不在映射里时不补 DONE', async () => {
+  const marked: string[] = [];
+  const { provider, setReply } = fixture({ markDone: (id) => marked.push(id) });
+  setReply('om_src');
+
+  // 收件人翻译不出会话：交付失败，只留「收到」。
+  const failed = await provider.deliver({
+    ...DELIVERY,
+    id: 'dlv_fail',
+    recipient: 'ou_nobody',
+    inReplyTo: 'oc_chat:om_src',
+    stream: { id: 's2', revision: 1, final: true },
+  });
+  assert.equal(failed.status, 'failed');
+  assert.deepEqual(marked, []);
+
+  // 重启丢了入站映射：final 也找不到原消息。
+  const unknown = await provider.deliver({
+    ...DELIVERY,
+    id: 'dlv_unknown',
+    inReplyTo: 'oc_chat:om_gone',
+    stream: { id: 's3', revision: 1, final: true },
+  });
+  assert.equal(unknown.status, 'sent');
+  assert.deepEqual(marked, []);
 });
