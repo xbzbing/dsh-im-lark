@@ -559,7 +559,7 @@ test('桥：单选勾了多项时每次刷新卡片，改成一项即可通过',
   assert.match(JSON.stringify(patches[1]), /已作答/u);
 });
 
-test('桥：流式终稿送达后给原消息补 DONE，进度修订不补', async () => {
+test('桥：流式终稿带 completes 才补 DONE，进度修订不补', async () => {
   const marked: string[] = [];
   const { provider, setReply } = fixture({ markDone: (id) => marked.push(id) });
   setReply('om_known');
@@ -577,77 +577,127 @@ test('桥：流式终稿送达后给原消息补 DONE，进度修订不补', asy
     ...DELIVERY,
     id: 'dlv_final',
     inReplyTo: 'oc_chat:om_known',
+    completes: ['oc_chat:om_known'],
     stream: { id: 's1', revision: 2, final: true },
   });
   assert.equal(final.status, 'sent');
   assert.deepEqual(marked, ['om_known']);
 });
 
-test('桥：非流式收尾（带会话 refs）补 DONE；分发回执、停滞与孤儿提醒不补', async () => {
+test('桥：非流式收尾只认 completes；分发回执、停滞、孤儿、转投确认都不带', async () => {
   const marked: string[] = [];
   const { provider, setReply } = fixture({ markDone: (id) => marked.push(id) });
   setReply('om_known');
   const refs = [{ kind: 'session' as const, id: 's_1', title: '会话' }];
 
-  // 核心 conversationGranularity='result' 时的非流式正常收尾：带会话 refs。
-  const done = await provider.deliver({ ...DELIVERY, id: 'dlv_done', inReplyTo: 'oc_chat:om_known', refs });
+  // 正常收尾（核心 conversationGranularity='result' 时没有流）：带 completes。
+  const done = await provider.deliver({
+    ...DELIVERY,
+    id: 'dlv_done',
+    inReplyTo: 'oc_chat:om_known',
+    refs,
+    completes: ['oc_chat:om_known'],
+  });
   assert.equal(done.status, 'sent');
   assert.deepEqual(marked, ['om_known']);
 
-  // 分发回执/提示：intent 也是 result、也带 inReplyTo，但没有 refs——任务还在别处跑。
-  const ack = await provider.deliver({ ...DELIVERY, id: 'dlv_ack', title: '', body: '已分发', inReplyTo: 'oc_chat:om_known' });
-  assert.equal(ack.status, 'sent');
-  assert.deepEqual(marked, ['om_known'], '分发回执不算完成');
-
-  // 两个带 refs 的已知非完成项按固定标题排除（停滞说任务可能还在跑，孤儿收尾说结果没送回来）。
-  for (const title of ['长时间没有动静', '这一轮没有正常收尾']) {
-    const notice = await provider.deliver({ ...DELIVERY, id: `dlv_${title}`, title, inReplyTo: 'oc_chat:om_known', refs });
-    assert.equal(notice.status, 'sent');
+  // 这些交付核心都不带 completes：任务还在别处跑 / 结果回不来 / 只是转交确认。
+  // 其中转投确认与派发恢复**带 refs**，旧启发式正是因此误打，这里一并钉住。
+  const notDone: Array<{ id: string; title: string; refs?: typeof refs; inReplyTo?: string }> = [
+    { id: 'dlv_ack', title: '', inReplyTo: 'oc_chat:om_known' },
+    { id: 'dlv_stall', title: '长时间没有动静', refs, inReplyTo: 'oc_chat:om_known' },
+    { id: 'dlv_orphan', title: '这一轮没有正常收尾', refs, inReplyTo: 'oc_chat:om_known' },
+    { id: 'dlv_transfer', title: '已转给会话', refs, inReplyTo: 'oc_chat:om_known' },
+    { id: 'dlv_recovery', title: '这批任务没有自动重发', refs, inReplyTo: 'oc_chat:om_known' },
+  ];
+  for (const notice of notDone) {
+    const receipt = await provider.deliver({ ...DELIVERY, ...notice, body: '正文' });
+    assert.equal(receipt.status, 'sent');
   }
-  assert.deepEqual(marked, ['om_known'], '停滞/孤儿提醒不算完成');
+  assert.deepEqual(marked, ['om_known'], '只有带 completes 的那条算完成');
 });
 
-test('桥：发送失败或 inReplyTo 不在映射里时不补 DONE', async () => {
+test('桥：一条交付完成多条消息时逐个打', async () => {
   const marked: string[] = [];
   const { provider, setReply } = fixture({ markDone: (id) => marked.push(id) });
-  setReply('om_src');
+  setReply('om_known');
+  setReply('om_second');
+
+  const receipt = await provider.deliver({
+    ...DELIVERY,
+    id: 'dlv_multi',
+    inReplyTo: 'oc_chat:om_known',
+    completes: ['oc_chat:om_known', 'oc_chat:om_second'],
+  });
+  assert.equal(receipt.status, 'sent');
+  assert.deepEqual(marked, ['om_known', 'om_second'], '连发被并成一轮，两条都要打');
+});
+
+test('桥：completes 为空或不带该字段时不打（旧核心与进度交付）', async () => {
+  const marked: string[] = [];
+  const { provider, setReply } = fixture({ markDone: (id) => marked.push(id) });
+  setReply('om_known');
+
+  const empty = await provider.deliver({ ...DELIVERY, id: 'dlv_empty', inReplyTo: 'oc_chat:om_known', completes: [] });
+  assert.equal(empty.status, 'sent');
+
+  // 旧核心：正常收尾的形状（带 refs、带 inReplyTo）但没有 completes —— 旧启发式会打，现在不打。
+  const legacy = await provider.deliver({
+    ...DELIVERY,
+    id: 'dlv_legacy',
+    inReplyTo: 'oc_chat:om_known',
+    refs: [{ kind: 'session', id: 's_1', title: '会话' }],
+  });
+  assert.equal(legacy.status, 'sent');
+  assert.deepEqual(marked, [], '漏打优于误打');
+});
+
+test('桥：发送失败或 completes 里的 id 查不到映射时不补 DONE', async () => {
+  const marked: string[] = [];
+  const { provider, setReply } = fixture({ markDone: (id) => marked.push(id) });
+  setReply('om_known');
 
   // 收件人翻译不出会话：交付失败，只留「收到」。
   const failed = await provider.deliver({
     ...DELIVERY,
     id: 'dlv_fail',
     recipient: 'ou_nobody',
-    inReplyTo: 'oc_chat:om_src',
+    inReplyTo: 'oc_chat:om_known',
+    completes: ['oc_chat:om_known'],
     stream: { id: 's2', revision: 1, final: true },
   });
   assert.equal(failed.status, 'failed');
   assert.deepEqual(marked, []);
 
-  // 重启丢了入站映射：final 也找不到原消息。
+  // 重启丢了入站映射：completes 指过来也翻不出平台消息 id。
   const unknown = await provider.deliver({
     ...DELIVERY,
     id: 'dlv_unknown',
-    inReplyTo: 'oc_chat:om_gone',
+    inReplyTo: 'oc_chat:om_known',
+    completes: ['oc_chat:om_gone'],
     stream: { id: 's3', revision: 1, final: true },
   });
   assert.equal(unknown.status, 'sent');
   assert.deepEqual(marked, []);
 });
 
-test('桥：不带 inReplyTo 的完成交付没有可标记的原消息', async () => {
+test('桥：交互卡作答的 card: id 与无 completes 的交付不打标记', async () => {
   const marked: string[] = [];
-  const { provider } = fixture({ markDone: (id) => marked.push(id) });
+  const { provider, setReply } = fixture({ markDone: (id) => marked.push(id) });
+  setReply('om_known');
 
-  const receipt = await provider.deliver({
+  // 卡片上写的文字作答没有平台消息 id，核心回 `card:<交付 id>`；即便列进 completes 也翻不出来。
+  const fromCard = await provider.deliver({
     ...DELIVERY,
-    id: 'dlv_no_reply',
-    refs: [{ kind: 'session', id: 's_1', title: '会话' }],
+    id: 'dlv_card',
+    inReplyTo: 'card:dlv_card_prev',
+    completes: ['card:dlv_card_prev'],
   });
-  assert.equal(receipt.status, 'sent');
+  assert.equal(fromCard.status, 'sent');
   assert.deepEqual(marked, []);
 });
 
-test('桥：流式卡片超限改分条后，终稿只发一次也不再重复打标记', async () => {
+test('桥：流式卡片超限改分条后，终稿仍按 completes 补一次', async () => {
   const marked: string[] = [];
   // 上限压到极小：第一次修订装不下卡片，走「分条最终稿」并把这条流标记为不再原地更新。
   const { provider, setReply } = fixture({ maxText: 8, markDone: (id) => marked.push(id) });
@@ -667,6 +717,7 @@ test('桥：流式卡片超限改分条后，终稿只发一次也不再重复�
     id: 'dlv_big_2',
     body: '很长的正文'.repeat(40),
     inReplyTo: 'oc_chat:om_known',
+    completes: ['oc_chat:om_known'],
     stream: { id: 's_big', revision: 2, final: true },
   });
   assert.equal(final.status, 'sent');

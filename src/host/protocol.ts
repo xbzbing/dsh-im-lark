@@ -78,6 +78,12 @@ export interface Delivery {
   supersedes?: string;
   stream?: DeliveryStream;
   inReplyTo?: string;
+  /**
+   * 这次交付完成了哪些用户消息（`OwnerMessageDraft.messageId`，最多 20 条）。
+   * 只有正常收尾的回合才会带：停滞提醒、重启孤儿、派发回执、转投确认、命令回复都不带。
+   * 旧核心不发这个字段——漏打完成标记优于误打。
+   */
+  completes?: readonly string[];
   images?: readonly DeliveryImage[];
 }
 

@@ -93,6 +93,7 @@ test('栈：「处理状态表情」打开时收到打 Get，回答送达后按�
       title: '回答',
       body: '正文',
       inReplyTo: 'oc_1:om_src',
+      completes: ['oc_1:om_src'],
       stream: { id: 's1', revision: 1, final: true },
     });
     assert.equal(receipt.status, 'sent');
@@ -110,6 +111,7 @@ test('栈：「处理状态表情」打开时收到打 Get，回答送达后按�
       title: '回答',
       body: '正文',
       inReplyTo: 'oc_1:om_src',
+      completes: ['oc_1:om_src'],
       stream: { id: 's2', revision: 1, final: true },
     });
     assert.equal(reactions.filter((item) => item.emojiType === 'DONE').length, 1, '同一原消息只补一次');
@@ -142,6 +144,7 @@ test('栈：关掉「处理状态表情」时 Get 与 DONE 都不打', async () 
       title: '回答',
       body: '正文',
       inReplyTo: 'oc_1:om_src',
+      completes: ['oc_1:om_src'],
       stream: { id: 's1', revision: 1, final: true },
     });
     assert.deepEqual(reactions, []);
