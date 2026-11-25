@@ -40,6 +40,8 @@
     "cordis.patch.yml",
     "locale/*.json",
     "assets/icon.svg",
+    "assets/hero.zh.png",
+    "assets/hero.en.png",
     "docs/adr",
     "README.md",
     "LICENSE"

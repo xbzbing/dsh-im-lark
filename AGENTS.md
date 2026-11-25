@@ -71,6 +71,7 @@ npm run typecheck && npm test && npm run build && npm run verify
 - 版本三处同步：`package.json`、`package-lock.json`、`src/shared/version.ts`；正式版正文写 `docs/releases/v<版本>.md`，预发布不写文件（正文由 workflow 生成）
 - 预发布发 npm 频道标签（`stage` / `rc`），`latest` 只给正式版
 - 发布正文是中英双语，格式见 `.github/RELEASE_TEMPLATE.md`
+- README 也是中英双语：`README.md`（中文）与 `README.en.md`（英文）必须同步改；两边的 hero 图分别引用 `assets/hero.zh.png` / `assets/hero.en.png`（可编辑源文件是同名 `.svg`，改图后重新导出 PNG）
 
 ## 提交
 
