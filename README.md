@@ -1,5 +1,9 @@
 # dsh-im-lark
 
+**简体中文** · [English](README.en.md)
+
+![dsh-im-lark：把飞书 / Lark 接到 DeepSeek Harness](assets/hero.zh.png)
+
 把飞书 / Lark 机器人接到 DeepSeek Harness：在飞书里私聊机器人，等于在 Web 端对话。
 
 两条互相独立的使用路径：
