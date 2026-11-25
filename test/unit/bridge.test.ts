@@ -3,6 +3,7 @@ import { test } from 'node:test';
 
 import { createLarkBridge } from '../../src/host/bridge.ts';
 import type { LarkApi } from '../../src/host/lark/api.ts';
+import type { LarkLogger } from '../../src/host/lark/connection.ts';
 import type { AcceptResult, BridgeHandle, BridgeProvider, Delivery, InteractionAnswerDraft, OwnerMessageDraft } from '../../src/host/protocol.ts';
 
 /** 桥对平台发出的操作：契约用例据此判断「有没有真的再发一次」。 */
@@ -35,6 +36,7 @@ function fixture(
     maxText?: number;
     chatFor?: (sender: string) => string | undefined;
     markDone?: (platformMessageId: string) => void;
+    logger?: LarkLogger;
   } = {},
 ): Fixture {
   const operations: NativeOperation[] = [];
@@ -86,6 +88,7 @@ function fixture(
     maxText: options.maxText ?? 2000,
     ...(options.chatFor === undefined ? {} : { chatFor: options.chatFor }),
     ...(options.markDone === undefined ? {} : { markDone: options.markDone }),
+    ...(options.logger === undefined ? {} : { logger: options.logger }),
   });
 
   const provider: BridgeProvider = {
@@ -608,7 +611,8 @@ test('桥：非流式收尾只认 completes；分发回执、停滞、孤儿、�
     { id: 'dlv_stall', title: '长时间没有动静', refs, inReplyTo: 'oc_chat:om_known' },
     { id: 'dlv_orphan', title: '这一轮没有正常收尾', refs, inReplyTo: 'oc_chat:om_known' },
     { id: 'dlv_transfer', title: '已转给会话', refs, inReplyTo: 'oc_chat:om_known' },
-    { id: 'dlv_recovery', title: '这批任务没有自动重发', refs, inReplyTo: 'oc_chat:om_known' },
+    // 标题取自核心 recovery.ts 的真实文案（`派发被打断：…`），不是正文摘要。
+    { id: 'dlv_recovery', title: '派发被打断：写周报', refs, inReplyTo: 'oc_chat:om_known' },
   ];
   for (const notice of notDone) {
     const receipt = await provider.deliver({ ...DELIVERY, ...notice, body: '正文' });
@@ -633,7 +637,7 @@ test('桥：一条交付完成多条消息时逐个打', async () => {
   assert.deepEqual(marked, ['om_known', 'om_second'], '连发被并成一轮，两条都要打');
 });
 
-test('桥：completes 为空或不带该字段时不打（旧核心与进度交付）', async () => {
+test('桥：completes 为空或不带该字段时不打（旧核心、取消/失败轮、进度交付）', async () => {
   const marked: string[] = [];
   const { provider, setReply } = fixture({ markDone: (id) => marked.push(id) });
   setReply('om_known');
@@ -649,12 +653,26 @@ test('桥：completes 为空或不带该字段时不打（旧核心与进度交�
     refs: [{ kind: 'session', id: 's_1', title: '会话' }],
   });
   assert.equal(legacy.status, 'sent');
+
+  // 取消 / 失败 / 超出 token 上限而中断的一轮：终稿照发，但核心不列 completes（没有正常答复）。
+  const aborted = await provider.deliver({
+    ...DELIVERY,
+    id: 'dlv_aborted',
+    body: '这一轮被取消了',
+    inReplyTo: 'oc_chat:om_known',
+    stream: { id: 's_abort', revision: 1, final: true },
+  });
+  assert.equal(aborted.status, 'sent');
   assert.deepEqual(marked, [], '漏打优于误打');
 });
 
 test('桥：发送失败或 completes 里的 id 查不到映射时不补 DONE', async () => {
   const marked: string[] = [];
-  const { provider, setReply } = fixture({ markDone: (id) => marked.push(id) });
+  const debugs: unknown[][] = [];
+  const { provider, setReply } = fixture({
+    markDone: (id) => marked.push(id),
+    logger: { debug: (...args) => debugs.push(args) },
+  });
   setReply('om_known');
 
   // 收件人翻译不出会话：交付失败，只留「收到」。
@@ -679,9 +697,11 @@ test('桥：发送失败或 completes 里的 id 查不到映射时不补 DONE', 
   });
   assert.equal(unknown.status, 'sent');
   assert.deepEqual(marked, []);
+  assert.equal(debugs.length, 1, '少打 DONE 时留一条调试日志，否则线上无从排查');
+  assert.match(String(debugs[0]![1]), /om_gone/u);
 });
 
-test('桥：交互卡作答的 card: id 与无 completes 的交付不打标记', async () => {
+test('桥：卡片作答的 card: id 翻不出平台消息，不打标记', async () => {
   const marked: string[] = [];
   const { provider, setReply } = fixture({ markDone: (id) => marked.push(id) });
   setReply('om_known');
@@ -697,30 +717,46 @@ test('桥：交互卡作答的 card: id 与无 completes 的交付不打标记',
   assert.deepEqual(marked, []);
 });
 
-test('桥：流式卡片超限改分条后，终稿仍按 completes 补一次', async () => {
+test('桥：流式卡片超限改分条后，终稿内容仍要发出并补一次 DONE', async () => {
   const marked: string[] = [];
-  // 上限压到极小：第一次修订装不下卡片，走「分条最终稿」并把这条流标记为不再原地更新。
-  const { provider, setReply } = fixture({ maxText: 8, markDone: (id) => marked.push(id) });
+  // 正文大到渲染出的卡片必然超过 28 KB：第一次修订就走「分条最终稿」，并把这条流标记为不再原地更新。
+  const { provider, setReply, contents } = fixture({ maxText: 4000, markDone: (id) => marked.push(id) });
   setReply('om_known');
 
   const first = await provider.deliver({
     ...DELIVERY,
     id: 'dlv_big_1',
-    body: '很长的正文'.repeat(40),
+    body: '很长的正文'.repeat(2500),
     inReplyTo: 'oc_chat:om_known',
     stream: { id: 's_big', revision: 1, final: false },
   });
   assert.equal(first.status, 'sent');
+  const beforeFinal = contents.length;
+  assert.ok(beforeFinal > 0);
+
+  // 证明这条流确实进了「分条」状态：后续中间修订只回执，不再发消息。
+  const quiet = await provider.deliver({
+    ...DELIVERY,
+    id: 'dlv_big_1b',
+    body: '中间进度',
+    inReplyTo: 'oc_chat:om_known',
+    stream: { id: 's_big', revision: 2, final: false },
+  });
+  assert.equal(quiet.messagesSent, 0);
+  assert.equal(contents.length, beforeFinal);
 
   const final = await provider.deliver({
     ...DELIVERY,
     id: 'dlv_big_2',
-    body: '很长的正文'.repeat(40),
+    body: `最终答案：${'这里是结论。'.repeat(1700)}`,
     inReplyTo: 'oc_chat:om_known',
     completes: ['oc_chat:om_known'],
-    stream: { id: 's_big', revision: 2, final: true },
+    stream: { id: 's_big', revision: 3, final: true },
   });
   assert.equal(final.status, 'sent');
+  // 终稿与中间修订内容不同，不能因为「这条流改过分条」就把它吞掉。
+  assert.ok(contents.length > beforeFinal, '终稿必须真的发出去');
+  assert.match(JSON.stringify(contents.slice(beforeFinal)), /最终答案/u);
   assert.equal(marked.length, 1, '分条后的终稿仍要给原消息补一次');
   assert.deepEqual(marked, ['om_known']);
 });

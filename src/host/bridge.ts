@@ -63,6 +63,7 @@ export interface BridgeDeps {
   chatFor?: (sender: string) => string | undefined;
   /**
    * 这一轮正常收尾后，给触发它的原消息补 `DONE`（入参是平台消息 id，桥已翻译好）。
+   * 一条交付可能完成多条原消息（核心把连发的几条并成一轮），所以逐个调用。
    * 是否打表情（面板开关）由注入方判断；桥只在「完成且送达成功」时调用。
    */
   markDone?: (platformMessageId: string) => void;
@@ -164,9 +165,9 @@ export function createLarkBridge(deps: BridgeDeps): LarkBridge {
     let streamOversized = false;
     if (stream !== undefined) {
       const detached = detachedStreams.get(stream.id);
-      if (detached !== undefined) {
-        // 已经用分条消息发过最终内容；后续修订再发只会刷屏。
-        markDone();
+      if (detached !== undefined && stream.final !== true) {
+        // 这条流已经改用分条消息了：中间修订再发只会刷屏。
+        // 终稿不能在这里吞掉——它和中间修订内容不同，要往下走正常发送。
         return { deliveryId, status: 'sent', bridgeMessageId: detached, messagesSent: 0 };
       }
       const current = streams.get(stream.id);
@@ -301,10 +302,12 @@ export function createLarkBridge(deps: BridgeDeps): LarkBridge {
   function completionTargets(delivery: Delivery): string[] {
     const targets: string[] = [];
     for (const id of delivery.completes ?? []) {
-      // 核心给的是入站草稿的 messageId，要翻成平台消息 id；查不到（重启丢映射、
-      // 卡片的 `card:<id>`）就不打。
+      // 核心给的是入站草稿的 messageId，要翻成平台消息 id；查不到就不打。
+      // 常见原因：插件重启后入站映射被淘汰（有界 FIFO）、核心契约漂移。留一条调试日志，
+      // 否则「少打了一个 DONE」在线上无从排查（不打对用户无害，但说不清为什么）。
       const platformId = inbound.get(id);
       if (platformId !== undefined) targets.push(platformId);
+      else logger.debug?.('完成标记找不到对应的平台消息，跳过', id);
     }
     return targets;
   }
