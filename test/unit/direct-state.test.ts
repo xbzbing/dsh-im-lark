@@ -11,7 +11,13 @@ test('绑定：写盘后新实例能读回，文件权限 0600', async () => {
     await store.set({ sessionId: 's_1', workspaceId: 'ws_1', title: '飞书 · abcdef' });
 
     const reopened = new DirectBindingStore({ dataDir: dir.path });
-    assert.deepEqual(await reopened.get(), { sessionId: 's_1', workspaceId: 'ws_1', title: '飞书 · abcdef' });
+    assert.deepEqual(await reopened.get(), {
+      sessionId: 's_1',
+      workspaceId: 'ws_1',
+      title: '飞书 · abcdef',
+      frontSessionId: 's_1',
+      frontTitle: '飞书 · abcdef',
+    });
 
     const mode = (await stat(dir.at('direct.json'))).mode & 0o777;
     assert.equal(mode.toString(8), '600');
@@ -25,6 +31,29 @@ test('绑定：/switch 的标记与标题一起读回', async () => {
 
     const reopened = new DirectBindingStore({ dataDir: dir.path });
     assert.deepEqual(await reopened.get(), { sessionId: 's_2', workspaceId: '', title: '乙', switched: true });
+  });
+});
+
+test('绑定：旧版未切换的绑定把当前会话当前台', async () => {
+  await withTempDir(async (dir) => {
+    const { writeFile } = await import('node:fs/promises');
+    await writeFile(dir.at('direct.json'), JSON.stringify({ sessionId: 's_1', workspaceId: '', title: '甲' }), 'utf8');
+    const binding = await new DirectBindingStore({ dataDir: dir.path }).get();
+    assert.equal(binding?.frontSessionId, 's_1');
+    assert.equal(binding?.frontTitle, '甲');
+  });
+});
+
+test('绑定：切走后可以单独更新前台标题', async () => {
+  await withTempDir(async (dir) => {
+    const store = new DirectBindingStore({ dataDir: dir.path });
+    await store.set({ sessionId: 's_2', workspaceId: '', title: '乙', switched: true, frontSessionId: 's_1', frontTitle: '甲' });
+
+    await store.setTitle('新甲', 's_1');
+    const binding = await store.get();
+    assert.equal(binding?.title, '乙');
+    assert.equal(binding?.frontSessionId, 's_1');
+    assert.equal(binding?.frontTitle, '新甲');
   });
 });
 

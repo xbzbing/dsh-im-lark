@@ -26,6 +26,7 @@ import type { LarkInboundMessage } from './lark/types.ts';
 import type { OutboundChannel } from './outbound.ts';
 import type { OwnerMessageDraft } from './protocol.ts';
 import type { LocalSettings } from './config.ts';
+import { frontSessionOf } from './state/direct.ts';
 import type { DirectBindingStore, OwnerStore } from './state/direct.ts';
 import { MAX_LISTING } from './state/listing.ts';
 import type { ListingStore } from './state/listing.ts';
@@ -176,23 +177,21 @@ export class StandaloneChat {
   handleEvent(sessionId: string, event: unknown): void {
     this.#watcher.handleEvent(sessionId, event);
 
-    const binding = this.#bindings.peek();
-    if (binding === null || binding.sessionId !== sessionId) return;
     const entry = asRecord(event);
     if (entry === null) return;
 
+    // 标题事件连前台会话一起跟：切走之后前台改名，回来时前缀才是新的。
+    if (entry.type === 'session/title') {
+      const title = asRecord(entry.data)?.title;
+      if (typeof title !== 'string' || title.trim() === '') return;
+      void this.#bindings.setTitle(title.trim(), sessionId).catch(() => undefined);
+      return;
+    }
+
+    const binding = this.#bindings.peek();
+    if (binding === null || binding.sessionId !== sessionId) return;
+
     switch (entry.type) {
-      case 'session/title': {
-        const title = asRecord(entry.data)?.title;
-        if (typeof title !== 'string' || title.trim() === '') return;
-        const next = title.trim();
-        // 异步落盘前绑定可能已经切走：只改仍然指向这个会话的标题。
-        void this.#bindings
-          .get()
-          .then((current) => (current !== null && current.sessionId === sessionId ? this.#bindings.setTitle(next) : undefined))
-          .catch(() => undefined);
-        return;
-      }
       case 'turn/start':
         this.#running = true;
         this.#answer = '';
@@ -298,7 +297,13 @@ export class StandaloneChat {
       const workspaceId = configured !== '' ? configured : this.#workspaceId().trim();
       const created = await controller.create(workspaceId === '' ? {} : { workspaceId });
       const title = `飞书${this.#ownerLabel() === '' ? '' : ` · ${this.#ownerLabel()}`}`;
-      await this.#bindings.set({ sessionId: created.sessionId, workspaceId, title });
+      await this.#bindings.set({
+        sessionId: created.sessionId,
+        workspaceId,
+        title,
+        frontSessionId: created.sessionId,
+        frontTitle: title,
+      });
       if (typeof controller.rename === 'function') {
         void Promise.resolve(controller.rename({ sessionId: created.sessionId, title })).catch(() => undefined);
       }
@@ -381,6 +386,7 @@ export class StandaloneChat {
   /** `/sessions [页码]`：列一份新快照，序号在下次发 `/sessions` 之前不变。 */
   async #showSessions(page: number | undefined): Promise<void> {
     const binding = await this.#bindings.get();
+    const front = frontSessionOf(binding);
     const catalog = await loadSessionCatalog(
       this.#controller(),
       binding === null ? {} : { keepId: binding.sessionId },
@@ -390,10 +396,12 @@ export class StandaloneChat {
       return;
     }
 
-    const visible = catalog.sessions.slice(0, MAX_LISTING);
+    // 前台会话不参与编号：它固定是 0，列出来只会让序号和切换目标对不上。
+    const others = catalog.sessions.filter((row) => row.sessionId !== front?.sessionId);
+    const visible = others.slice(0, MAX_LISTING);
     await this.#listing.set(visible);
     if (visible.length === 0) {
-      await this.#reply('最近没有会话。');
+      await this.#reply('没有其它会话。');
       return;
     }
 
@@ -407,7 +415,7 @@ export class StandaloneChat {
       offset,
       total: visible.length,
       ...(binding === null ? {} : { currentId: binding.sessionId }),
-      ...(catalog.sessions.length > visible.length ? { truncated: true } : {}),
+      ...(others.length > visible.length ? { truncated: true } : {}),
     }));
   }
 
@@ -471,9 +479,10 @@ export class StandaloneChat {
     this.#watcher.stop();
   }
 
-  /** 等 `/send` 的推送发完（测试与停机对齐用）。 */
+  /** 等 `/send` 的推送与绑定写入落盘（测试与停机对齐用）。 */
   async drain(): Promise<void> {
     await this.#watcher.drain();
+    await this.#bindings.drain();
   }
 }
 

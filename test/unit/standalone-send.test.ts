@@ -131,7 +131,7 @@ test('/send 按序号发到目标会话，回答回到发命令的聊天', async
     await bindAndList(h);
 
     const send = inbound();
-    await h.chat.handleInbound(send, draftOf(send, '/send 2 帮我看看'));
+    await h.chat.handleInbound(send, draftOf(send, '/send 1 帮我看看'));
     assert.equal(h.prompts.at(-1)!.sessionId, 's_2');
     assert.equal(h.prompts.at(-1)!.mode, 'queue');
     assert.match(h.deliveries.at(-1)!.text, /已交给会话「乙」/);
@@ -157,7 +157,7 @@ test('/send 到当前会话走普通提交，回答只发一次', async () => {
     await bindAndList(h);
 
     const send = inbound();
-    await h.chat.handleInbound(send, draftOf(send, '/send 1 继续'));
+    await h.chat.handleInbound(send, draftOf(send, '/send 0 继续'));
     assert.equal(h.prompts.at(-1)!.sessionId, 's_1');
     assert.match(h.deliveries.at(-1)!.text, /当前会话/);
 
@@ -172,6 +172,28 @@ test('/send 到当前会话走普通提交，回答只发一次', async () => {
   });
 });
 
+test('/send 0 从其它会话发到前台，回答回到这里', async () => {
+  await withTempDir(async (dir) => {
+    const h = await harness(dir.path, { rows: ROWS });
+    await bindAndList(h);
+
+    const sw = inbound();
+    await h.chat.handleInbound(sw, draftOf(sw, '/switch 1'));
+    const send = inbound();
+    await h.chat.handleInbound(send, draftOf(send, '/send 0 回前台'));
+    assert.equal(h.prompts.at(-1)!.sessionId, 's_1');
+
+    h.chat.handleEvent('s_1', { type: 'turn/start', data: {} });
+    h.chat.handleEvent('s_1', { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '前台答' }] } } });
+    h.chat.handleEvent('s_1', { type: 'turn/end', data: {} });
+    await h.chat.drain();
+
+    assert.match(h.deliveries.at(-1)!.text, /来自会话「甲」/);
+    assert.match(h.deliveries.at(-1)!.text, /前台答/);
+    assert.equal((await h.bindings.get())?.sessionId, 's_2');
+  });
+});
+
 test('/send 的序号不在快照里时提示先列会话', async () => {
   await withTempDir(async (dir) => {
     const h = await harness(dir.path, { rows: ROWS });
@@ -179,7 +201,7 @@ test('/send 的序号不在快照里时提示先列会话', async () => {
     await h.chat.handleInbound(hello, draftOf(hello, '你好'));
 
     const missing = inbound();
-    await h.chat.handleInbound(missing, draftOf(missing, '/send 2 你好'));
+    await h.chat.handleInbound(missing, draftOf(missing, '/send 1 你好'));
     assert.match(h.deliveries.at(-1)!.text, /还没列过会话/);
     assert.equal(h.prompts.length, 1);
 
@@ -203,7 +225,7 @@ test('/send 排队时跳过目标会话上一轮的 turn/end', async () => {
     await bindAndList(h);
 
     const send = inbound();
-    await h.chat.handleInbound(send, draftOf(send, '/send 2 排队'));
+    await h.chat.handleInbound(send, draftOf(send, '/send 1 排队'));
     assert.match(h.deliveries.at(-1)!.text, /正在运行/);
 
     // 先到的是上一轮的收尾，不能当成这一轮的回答。
@@ -228,7 +250,7 @@ test('/send 超时后不再等，且不打 DONE', async () => {
     await bindAndList(h);
 
     const send = inbound();
-    await h.chat.handleInbound(send, draftOf(send, '/send 2 内容'));
+    await h.chat.handleInbound(send, draftOf(send, '/send 1 内容'));
     assert.equal(h.timers.length, 1);
 
     h.timers[0]!();
@@ -246,7 +268,7 @@ test('/send 的序号快照跨重启保留', async () => {
 
     const second = await harness(dir.path, { rows: ROWS });
     const send = inbound();
-    await second.chat.handleInbound(send, draftOf(send, '/send 2 重启后'));
+    await second.chat.handleInbound(send, draftOf(send, '/send 1 重启后'));
     assert.equal(second.prompts.at(-1)!.sessionId, 's_2');
     second.chat.stop();
   });
@@ -258,7 +280,7 @@ test('/send 的回合被中止时只回提示，不打 DONE', async () => {
     await bindAndList(h);
 
     const send = inbound();
-    await h.chat.handleInbound(send, draftOf(send, '/send 2 内容'));
+    await h.chat.handleInbound(send, draftOf(send, '/send 1 内容'));
     h.chat.handleEvent('s_2', { type: 'turn/start', data: {} });
     h.chat.handleEvent('s_2', { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '半截' }] } } });
     h.chat.handleEvent('s_2', { type: 'turn/end', data: { reason: { kind: 'aborted' } } });
@@ -275,7 +297,7 @@ test('/send 只附图也能发到目标会话', async () => {
     await bindAndList(h);
 
     const send = inbound();
-    await h.chat.handleInbound(send, draftOf(send, '/send 2', {
+    await h.chat.handleInbound(send, draftOf(send, '/send 1', {
       images: [{ mediaType: 'image/png', data: 'AAAA', name: '图.png' }],
     }));
 
@@ -291,7 +313,7 @@ test('/send 的回合失败时回错误原文，不打 DONE', async () => {
     await bindAndList(h);
 
     const send = inbound();
-    await h.chat.handleInbound(send, draftOf(send, '/send 2 内容'));
+    await h.chat.handleInbound(send, draftOf(send, '/send 1 内容'));
     h.chat.handleEvent('s_2', { type: 'turn/start', data: {} });
     h.chat.handleEvent('s_2', { type: 'turn/end', data: { reason: { kind: 'failed', error: { message: '模型炸了' } } } });
     await h.chat.drain();
@@ -307,7 +329,7 @@ test('/send 的回合没有文本时只提示，不打 DONE', async () => {
     await bindAndList(h);
 
     const send = inbound();
-    await h.chat.handleInbound(send, draftOf(send, '/send 2 内容'));
+    await h.chat.handleInbound(send, draftOf(send, '/send 1 内容'));
     h.chat.handleEvent('s_2', { type: 'turn/start', data: {} });
     h.chat.handleEvent('s_2', { type: 'turn/end', data: {} });
     await h.chat.drain();

@@ -156,7 +156,7 @@ test('命令解析：认清单里的命令，未知命令单独标出', () => {
   assert.deepEqual(parseCommand('/sessions'), { kind: 'sessions' });
   assert.deepEqual(parseCommand('/sessions 3'), { kind: 'sessions', page: 3 });
   assert.deepEqual(parseCommand('/sessions abc'), { kind: 'sessions' });
-  assert.deepEqual(parseCommand('/switch 2'), { kind: 'switch', ref: '2' });
+  assert.deepEqual(parseCommand('/switch 1'), { kind: 'switch', ref: '1' });
   assert.deepEqual(parseCommand('/switch'), { kind: 'switch', ref: '' });
   assert.deepEqual(parseCommand('/nope'), { kind: 'unknown', name: 'nope' });
 });
@@ -368,8 +368,9 @@ test('独立模式：/sessions 列出会话与序号，不切换绑定', async (
     const list = inbound();
     await chat.handleInbound(list, draftOf(list, '/sessions'));
     const text = deliveries.at(-1)!.text;
-    assert.match(text, /1 \| 甲（当前）/);
-    assert.match(text, /2 \| 乙/);
+    assert.doesNotMatch(text, /甲/);
+    assert.match(text, /1 \| 乙/);
+    assert.doesNotMatch(text, /（当前）/);
     assert.match(text, /运行中/);
     assert.equal((await bindings.get())?.sessionId, 's_1');
 
@@ -390,7 +391,7 @@ test('独立模式：/switch 按快照序号切换，之后的回复带会话名
     await chat.handleInbound(list, draftOf(list, '/sessions'));
 
     const sw = inbound();
-    await chat.handleInbound(sw, draftOf(sw, '/switch 2'));
+    await chat.handleInbound(sw, draftOf(sw, '/switch 1'));
 
     const binding = await bindings.get();
     assert.equal(binding?.sessionId, 's_2');
@@ -418,7 +419,7 @@ test('独立模式：/switch 的前缀跨重启保留，/new 后消失', async (
     const list = inbound();
     await first.chat.handleInbound(list, draftOf(list, '/sessions'));
     const sw = inbound();
-    await first.chat.handleInbound(sw, draftOf(sw, '/switch 2'));
+    await first.chat.handleInbound(sw, draftOf(sw, '/switch 1'));
 
     const restarted = await harness(dir.path, { listRows: rowsOf() });
     const status = inbound();
@@ -443,9 +444,9 @@ test('独立模式：/switch 拒绝还有 /send 在等回答的会话', async ()
     await chat.handleInbound(list, draftOf(list, '/sessions'));
 
     const send = inbound();
-    await chat.handleInbound(send, draftOf(send, '/send 2 你好'));
+    await chat.handleInbound(send, draftOf(send, '/send 1 你好'));
     const sw = inbound();
-    await chat.handleInbound(sw, draftOf(sw, '/switch 2'));
+    await chat.handleInbound(sw, draftOf(sw, '/switch 1'));
 
     assert.match(deliveries.at(-1)!.text, /还有一条 \/send 在等回答/);
     assert.equal((await bindings.get())?.sessionId, 's_1');
@@ -461,15 +462,18 @@ test('独立模式：/switch 到当前会话只打开前缀，不清待结算队
     const list = inbound();
     await chat.handleInbound(list, draftOf(list, '/sessions'));
 
+    // 先切到 s_2，再在同一会话里切一次：这次不能清掉待结算队列。
+    const first = inbound();
+    await chat.handleInbound(first, draftOf(first, '/switch 1'));
     const queued = inbound();
     await chat.handleInbound(queued, draftOf(queued, '排队的问题'));
     const sw = inbound();
     await chat.handleInbound(sw, draftOf(sw, '/switch 1'));
-    assert.match(deliveries.at(-1)!.text, /^\*\*甲>\*\*/);
+    assert.match(deliveries.at(-1)!.text, /^\*\*乙>\*\*/);
 
-    chat.handleEvent('s_1', { type: 'turn/start', data: {} });
-    chat.handleEvent('s_1', { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '答' }] } } });
-    chat.handleEvent('s_1', { type: 'turn/end', data: {} });
+    chat.handleEvent('s_2', { type: 'turn/start', data: {} });
+    chat.handleEvent('s_2', { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '答' }] } } });
+    chat.handleEvent('s_2', { type: 'turn/end', data: {} });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     assert.ok(marked.includes(queued.messageId), '同一会话切换不能丢掉待结算的消息');
@@ -487,7 +491,7 @@ test('独立模式：/switch 的目标已不在当前列表里时拒绝', async 
 
     rows.pop();
     const sw = inbound();
-    await chat.handleInbound(sw, draftOf(sw, '/switch 2'));
+    await chat.handleInbound(sw, draftOf(sw, '/switch 1'));
 
     assert.match(deliveries.at(-1)!.text, /不在当前会话列表里/);
     assert.equal((await bindings.get())?.sessionId, 's_1');
@@ -502,14 +506,152 @@ test('独立模式：session/title 更新绑定标题，前缀跟着变', async 
     const list = inbound();
     await chat.handleInbound(list, draftOf(list, '/sessions'));
     const sw = inbound();
-    await chat.handleInbound(sw, draftOf(sw, '/switch 2'));
+    await chat.handleInbound(sw, draftOf(sw, '/switch 1'));
 
     chat.handleEvent('s_2', { type: 'session/title', data: { title: '新名字' } });
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await chat.drain();
 
     const status = inbound();
     await chat.handleInbound(status, draftOf(status, '/status'));
     assert.match(deliveries.at(-1)!.text, /^\*\*新名字>\*\*/);
+  });
+});
+
+test('独立模式：/sessions 不显示前台会话，切走后只列其它会话', async () => {
+  await withTempDir(async (dir) => {
+    const { chat, deliveries } = await harness(dir.path, { listRows: rowsOf() });
+    const hello = inbound();
+    await chat.handleInbound(hello, draftOf(hello, '你好'));
+    const list = inbound();
+    await chat.handleInbound(list, draftOf(list, '/sessions'));
+    const sw = inbound();
+    await chat.handleInbound(sw, draftOf(sw, '/switch 1'));
+
+    const again = inbound();
+    await chat.handleInbound(again, draftOf(again, '/sessions'));
+    const text = deliveries.at(-1)!.text;
+    assert.doesNotMatch(text, /甲/);
+    assert.match(text, /1 \| 乙（当前）/);
+  });
+});
+
+test('独立模式：/switch 0 回到前台会话并去掉前缀', async () => {
+  await withTempDir(async (dir) => {
+    const { chat, deliveries, bindings, prompts } = await harness(dir.path, { listRows: rowsOf() });
+    const hello = inbound();
+    await chat.handleInbound(hello, draftOf(hello, '你好'));
+    const list = inbound();
+    await chat.handleInbound(list, draftOf(list, '/sessions'));
+    const sw = inbound();
+    await chat.handleInbound(sw, draftOf(sw, '/switch 1'));
+    assert.match(deliveries.at(-1)!.text, /^\*\*乙>\*\*/);
+
+    const back = inbound();
+    await chat.handleInbound(back, draftOf(back, '/switch 0'));
+    const binding = await bindings.get();
+    assert.equal(binding?.sessionId, 's_1');
+    assert.equal(binding?.switched, undefined);
+    assert.equal(binding?.frontSessionId, 's_1');
+    assert.doesNotMatch(deliveries.at(-1)!.text, /^\*\*/);
+    assert.match(deliveries.at(-1)!.text, /已回到前台会话「甲」/);
+
+    const ask = inbound();
+    await chat.handleInbound(ask, draftOf(ask, '继续'));
+    assert.equal(prompts.at(-1)!.sessionId, 's_1');
+    chat.handleEvent('s_1', { type: 'turn/start', data: {} });
+    chat.handleEvent('s_1', { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '答' }] } } });
+    chat.handleEvent('s_1', { type: 'turn/end', data: {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.doesNotMatch(deliveries.at(-1)!.text, /^\*\*/);
+  });
+});
+
+test('独立模式：/switch front 与 /switch 0 等价', async () => {
+  await withTempDir(async (dir) => {
+    const { chat, bindings } = await harness(dir.path, { listRows: rowsOf() });
+    const hello = inbound();
+    await chat.handleInbound(hello, draftOf(hello, '你好'));
+    const list = inbound();
+    await chat.handleInbound(list, draftOf(list, '/sessions'));
+    const sw = inbound();
+    await chat.handleInbound(sw, draftOf(sw, '/switch 1'));
+
+    const back = inbound();
+    await chat.handleInbound(back, draftOf(back, '/switch FRONT'));
+    assert.equal((await bindings.get())?.sessionId, 's_1');
+    assert.equal((await bindings.get())?.switched, undefined);
+  });
+});
+
+test('独立模式：/new 后没有前台会话，/switch 0 明确提示', async () => {
+  await withTempDir(async (dir) => {
+    const { chat, deliveries } = await harness(dir.path);
+    const hello = inbound();
+    await chat.handleInbound(hello, draftOf(hello, '你好'));
+    const reset = inbound();
+    await chat.handleInbound(reset, draftOf(reset, '/new'));
+    const back = inbound();
+    await chat.handleInbound(back, draftOf(back, '/switch 0'));
+    assert.match(deliveries.at(-1)!.text, /还没有前台会话/);
+  });
+});
+
+test('独立模式：前台会话不在了，/switch 0 提示 /new', async () => {
+  await withTempDir(async (dir) => {
+    const { chat, deliveries } = await harness(dir.path, { listRows: rowsOf().slice(1) });
+    const hello = inbound();
+    await chat.handleInbound(hello, draftOf(hello, '你好'));
+    const list = inbound();
+    await chat.handleInbound(list, draftOf(list, '/sessions'));
+    const sw = inbound();
+    await chat.handleInbound(sw, draftOf(sw, '/switch 1'));
+
+    const back = inbound();
+    await chat.handleInbound(back, draftOf(back, '/switch 0'));
+    assert.match(deliveries.at(-1)!.text, /前台会话「飞书 · abcdef」不在了/);
+    assert.match(deliveries.at(-1)!.text, /\/new/);
+  });
+});
+
+test('独立模式：前台会话不在了，/send 0 提示 /new 且不提交', async () => {
+  await withTempDir(async (dir) => {
+    const { chat, deliveries, prompts } = await harness(dir.path, { listRows: rowsOf().slice(1) });
+    const hello = inbound();
+    await chat.handleInbound(hello, draftOf(hello, '你好'));
+    const list = inbound();
+    await chat.handleInbound(list, draftOf(list, '/sessions'));
+    const sw = inbound();
+    await chat.handleInbound(sw, draftOf(sw, '/switch 1'));
+    assert.equal(prompts.length, 1);
+
+    const send = inbound();
+    await chat.handleInbound(send, draftOf(send, '/send 0 你好'));
+    assert.match(deliveries.at(-1)!.text, /前台会话「飞书 · abcdef」不在了/);
+    assert.equal(prompts.length, 1);
+  });
+});
+
+test('独立模式：切走后前台标题更新，/switch 0 用新标题', async () => {
+  await withTempDir(async (dir) => {
+    const rows = rowsOf();
+    const { chat, deliveries, bindings } = await harness(dir.path, { listRows: rows });
+    const hello = inbound();
+    await chat.handleInbound(hello, draftOf(hello, '你好'));
+    const list = inbound();
+    await chat.handleInbound(list, draftOf(list, '/sessions'));
+    const sw = inbound();
+    await chat.handleInbound(sw, draftOf(sw, '/switch 1'));
+
+    chat.handleEvent('s_1', { type: 'session/title', data: { title: '新前台' } });
+    await chat.drain();
+    assert.equal((await bindings.get())?.frontTitle, '新前台', '标题事件先落到前台字段');
+    // 下一次 list 会读到新标题；真实控制器里 title 事件与 list 同源。
+    rows[0] = { ...rows[0], projections: { values: { title: '新前台' } } };
+
+    const back = inbound();
+    await chat.handleInbound(back, draftOf(back, '/switch 0'));
+    assert.equal((await bindings.get())?.frontTitle, '新前台');
+    assert.match(deliveries.at(-1)!.text, /已回到前台会话「新前台」/);
   });
 });
 

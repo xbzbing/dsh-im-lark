@@ -10,9 +10,10 @@ import { randomUUID } from 'node:crypto';
 import type { LarkLogger } from './lark/connection.ts';
 import { buildContent } from './prompt-content.ts';
 import type { OwnerMessageDraft } from './protocol.ts';
-import { SEND_USAGE, loadSessionCatalog, resolveSessionRef } from './session-list.ts';
+import { SEND_USAGE, isFrontRef, loadSessionCatalog, resolveSessionRef } from './session-list.ts';
 import type { SendWatcher } from './session-watch.ts';
 import type { StandaloneController } from './standalone-types.ts';
+import { frontSessionOf } from './state/direct.ts';
 import type { DirectBindingStore } from './state/direct.ts';
 import type { ListingStore } from './state/listing.ts';
 
@@ -57,11 +58,36 @@ export async function handleSendCommand(
   }
 
   const binding = await host.bindings.get();
-  const catalog = await loadSessionCatalog(controller, binding === null ? {} : { keepId: binding.sessionId });
-  const picked = resolveSessionRef(command.ref, await host.listing.get(), catalog);
-  if ('miss' in picked) {
-    await host.reply(picked.miss);
+  const front = frontSessionOf(binding);
+  const wantFront = isFrontRef(command.ref);
+  if (wantFront && front === null) {
+    await host.reply('还没有前台会话：先发一条消息建会话。');
     return false;
+  }
+  const frontId = front?.sessionId ?? '';
+
+  // 0/front 不经过序号快照：前台会话不在 /sessions 的编号里。
+  const catalog = await loadSessionCatalog(
+    controller,
+    wantFront ? { keepId: frontId } : binding === null ? {} : { keepId: binding.sessionId },
+  );
+  let picked: { sessionId: string; title: string };
+  if (wantFront) {
+    const live = catalog.sessions.find((row) => row.sessionId === frontId);
+    if (catalog.available && live === undefined) {
+      await host.reply(
+        `前台会话「${front?.title || '未命名会话'}」不在了；发 /new 开新会话，或 /switch <序号> 换到其它会话。`,
+      );
+      return false;
+    }
+    picked = { sessionId: frontId, title: (live?.title ?? '').trim() || front?.title || '' };
+  } else {
+    const resolved = resolveSessionRef(command.ref, await host.listing.get(), catalog);
+    if ('miss' in resolved) {
+      await host.reply(resolved.miss);
+      return false;
+    }
+    picked = resolved;
   }
 
   if (binding !== null && binding.sessionId === picked.sessionId) {

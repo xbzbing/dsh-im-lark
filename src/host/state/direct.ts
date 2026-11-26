@@ -21,6 +21,29 @@ export interface DirectBinding {
   title?: string;
   /** 由 `/switch` 切过来：回复前标出会话名，重启后仍然生效。 */
   switched?: boolean;
+  /** 最初绑定的前台会话；`/switch` 只改当前绑定，不动它。 */
+  frontSessionId?: string;
+  /** 前台会话的标题；切走之后仍然记得，回到前台时用它。 */
+  frontTitle?: string;
+}
+
+export interface FrontSession {
+  sessionId: string;
+  title: string;
+}
+
+/**
+ * 取出前台会话。
+ *
+ * 旧版 `direct.json` 没有 `frontSessionId`：只要不是 `/switch` 过来的，就把当前绑定
+ * 当作前台；已经切走又没记前台时返回 null，只能靠 `/new` 重新建一个。
+ */
+export function frontSessionOf(binding: DirectBinding | null): FrontSession | null {
+  if (binding === null) return null;
+  const sessionId = binding.frontSessionId ?? (binding.switched === true ? '' : binding.sessionId);
+  if (sessionId === '') return null;
+  const title = sessionId === binding.sessionId ? binding.frontTitle ?? binding.title ?? '' : binding.frontTitle ?? '';
+  return { sessionId, title };
 }
 
 export interface OwnerIdentity {
@@ -36,6 +59,8 @@ export class DirectBindingStore {
   readonly #path: string;
   readonly #logger: StateLogger;
   #binding: DirectBinding | null | undefined;
+  /** 串行落盘：标题事件与 `/switch` 可能同一毫秒触发，不能互相覆盖。 */
+  #queue: Promise<void> = Promise.resolve();
 
   constructor(options: { dataDir: string; logger?: StateLogger }) {
     this.#path = join(options.dataDir, DIRECT_FILE);
@@ -56,18 +81,50 @@ export class DirectBindingStore {
 
   async set(binding: DirectBinding): Promise<void> {
     this.#binding = binding;
-    await writePrivateFile(this.#path, `${JSON.stringify(binding, null, 2)}\n`);
+    await this.#enqueueWrite();
   }
 
-  async setTitle(title: string): Promise<void> {
-    const current = await this.get();
-    if (current === null || current.title === title) return;
-    await this.set({ ...current, title });
+  /** 更新标题；给了 `sessionId` 时只改仍指向它的当前绑定或前台会话。 */
+  async setTitle(title: string, sessionId?: string): Promise<void> {
+    const run = this.#queue.then(async () => {
+      const current = await this.get();
+      if (current === null) return;
+      const target = sessionId ?? current.sessionId;
+      const next: DirectBinding = { ...current };
+      let changed = false;
+      if (current.sessionId === target && current.title !== title) {
+        next.title = title;
+        changed = true;
+      }
+      if (current.frontSessionId === target && current.frontTitle !== title) {
+        next.frontTitle = title;
+        changed = true;
+      }
+      if (!changed) return;
+      this.#binding = next;
+      await writePrivateFile(this.#path, `${JSON.stringify(next, null, 2)}\n`);
+    });
+    this.#queue = run.catch(() => undefined);
+    await run;
   }
 
   async clear(): Promise<void> {
     this.#binding = null;
-    await writePrivateFile(this.#path, `${JSON.stringify(null)}\n`);
+    await this.#enqueueWrite();
+  }
+
+  /** 等排队中的写入落盘（测试与停机用）。 */
+  async drain(): Promise<void> {
+    await this.#queue;
+  }
+
+  /** 排队写当前内存值：执行时再序列化，避免后到的标题被先到的绑定覆盖。 */
+  #enqueueWrite(): Promise<void> {
+    const run = this.#queue.then(() =>
+      writePrivateFile(this.#path, `${JSON.stringify(this.#binding ?? null, null, 2)}\n`),
+    );
+    this.#queue = run.catch(() => undefined);
+    return run;
   }
 }
 
@@ -76,11 +133,22 @@ function normalizeBinding(raw: unknown): DirectBinding | null {
   const record = raw as Record<string, unknown>;
   const sessionId = typeof record.sessionId === 'string' ? record.sessionId : '';
   if (sessionId === '') return null;
+
+  const switched = record.switched === true;
+  const title = typeof record.title === 'string' ? record.title : '';
+  const storedFrontId = typeof record.frontSessionId === 'string' ? record.frontSessionId : '';
+  // 旧版没有前台字段：未切换过的绑定就是前台，切换过的不知道前台是谁。
+  const frontSessionId = storedFrontId !== '' ? storedFrontId : switched ? '' : sessionId;
+  const storedFrontTitle = typeof record.frontTitle === 'string' ? record.frontTitle : '';
+  const frontTitle = storedFrontTitle !== '' ? storedFrontTitle : frontSessionId === sessionId ? title : '';
+
   return {
     sessionId,
     workspaceId: typeof record.workspaceId === 'string' ? record.workspaceId : '',
-    ...(typeof record.title === 'string' && record.title !== '' ? { title: record.title } : {}),
-    ...(record.switched === true ? { switched: true } : {}),
+    ...(title !== '' ? { title } : {}),
+    ...(switched ? { switched: true } : {}),
+    ...(frontSessionId !== '' ? { frontSessionId } : {}),
+    ...(frontTitle !== '' ? { frontTitle } : {}),
   };
 }
 

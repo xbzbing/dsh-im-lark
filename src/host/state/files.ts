@@ -7,6 +7,7 @@
 
 import { chmod, mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { dirname } from 'node:path';
 
 export interface StateLogger {
@@ -34,7 +35,7 @@ export async function ensurePrivateDir(dir: string): Promise<void> {
  */
 export async function writePrivateFile(path: string, content: string | Uint8Array): Promise<void> {
   await ensurePrivateDir(dirname(path));
-  const temp = `${path}.tmp-${process.pid}-${Date.now().toString(36)}`;
+  const temp = `${path}.tmp-${process.pid}-${randomUUID()}`;
   try {
     await writeFile(temp, content, { mode: FILE_MODE });
     try {
