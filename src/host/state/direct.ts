@@ -19,6 +19,8 @@ export interface DirectBinding {
   sessionId: string;
   workspaceId: string;
   title?: string;
+  /** 由 `/switch` 切过来：回复前标出会话名，重启后仍然生效。 */
+  switched?: boolean;
 }
 
 export interface OwnerIdentity {
@@ -78,6 +80,7 @@ function normalizeBinding(raw: unknown): DirectBinding | null {
     sessionId,
     workspaceId: typeof record.workspaceId === 'string' ? record.workspaceId : '',
     ...(typeof record.title === 'string' && record.title !== '' ? { title: record.title } : {}),
+    ...(record.switched === true ? { switched: true } : {}),
   };
 }
 

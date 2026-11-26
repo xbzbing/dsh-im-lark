@@ -19,6 +19,7 @@ const ID_SHOWN = 8;
 const SESSION_PREFIX = 'session-';
 
 export const SEND_USAGE = '用法：`/send <序号或会话 id> <内容>`。先发 `/sessions` 看序号。';
+export const SWITCH_USAGE = '用法：`/switch <序号或会话 id>`。先发 `/sessions` 看序号。';
 
 /** 宿主 `sessionController.list` 里本模块用到的形状（结构类型）。 */
 export interface SessionRow {
@@ -125,7 +126,7 @@ export function renderSessionList(view: SessionListView): string {
   ];
   if (view.truncated === true) lines.push('只列最近 100 个会话，更多请到 DSH 网页端查看。', '');
   if (view.page < view.pages) lines.push(`发 \`/sessions ${view.page + 1}\` 看下一页。`, '');
-  lines.push('发 `/send <序号> <内容>` 发到某个会话，那一轮的回答会回到这里；序号在下次发 `/sessions` 之前不变。');
+  lines.push('发 `/switch <序号>` 切换会话，之后的回复会标上会话名；`/send <序号> <内容>` 发到某个会话，那一轮的回答回到这里。序号在下次发 `/sessions` 之前不变。');
   return lines.join('\n');
 }
 
@@ -180,6 +181,21 @@ export function sessionIdMatches(sessionId: string, token: string): boolean {
 export function shortSessionId(sessionId: string): string {
   const id = sessionId.startsWith(SESSION_PREFIX) ? sessionId.slice(SESSION_PREFIX.length) : sessionId;
   return id.slice(0, ID_SHOWN);
+}
+
+const UNTITLED_SESSION = '未命名会话';
+const SESSION_LABEL_MAX = 32;
+
+/** 回复里的会话名：压平换行与连续空白，过长截断。 */
+export function sessionLabel(title: string | undefined): string {
+  const flat = (title ?? '').replace(/\s+/g, ' ').trim();
+  if (flat === '') return UNTITLED_SESSION;
+  return flat.length > SESSION_LABEL_MAX ? `${flat.slice(0, SESSION_LABEL_MAX - 1)}…` : flat;
+}
+
+/** 放进 `**…**` 里的会话名：转义会打断强调的 Markdown 字符。 */
+export function markLabel(label: string): string {
+  return label.replace(/[\\`*_[\]<>|~]/g, '\\$&');
 }
 
 /** 表格单元格：换行压成空格、`|` 转义（否则会被当成列分隔），过长截断。 */

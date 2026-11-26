@@ -12,6 +12,7 @@ export type StandaloneCommand =
   | { kind: 'help' }
   | { kind: 'new' }
   | { kind: 'sessions'; page?: number }
+  | { kind: 'switch'; ref: string }
   | { kind: 'status' }
   | { kind: 'stop' }
   | { kind: 'trace' }
@@ -46,6 +47,8 @@ export function parseCommand(input: string): StandaloneCommand | null {
       return parseSend(rest);
     case 'sessions':
       return parseSessions(rest);
+    case 'switch':
+      return parseSwitch(rest);
     default:
       return { kind: 'unknown', name };
   }
@@ -64,11 +67,17 @@ function parseSessions(rest: string): StandaloneCommand {
   return Number.isInteger(page) && page > 0 ? { kind: 'sessions', page } : { kind: 'sessions' };
 }
 
+function parseSwitch(rest: string): StandaloneCommand {
+  const space = rest.search(/\s/);
+  return { kind: 'switch', ref: space < 0 ? rest : rest.slice(0, space) };
+}
+
 export const HELP_TEXT = [
   '我是这个工作区的飞书入口。可用命令：',
   '',
   '`/new` 开新会话',
   '`/sessions [页码]` 列出最近会话与序号',
+  '`/switch <序号或会话 id>` 切换当前会话，之后的回复会标上会话名',
   '`/send <序号或会话 id> <内容>` 发到指定会话，那一轮的回答回到这里',
   '`/status` 当前会话与连接状态',
   '`/stop` 中止正在跑的回合',

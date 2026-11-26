@@ -5,18 +5,19 @@
  * 只有核心不在/开关关掉时才会走到这里。所以这里不再判断「要不要让位」，只负责
  * 把消息变成会话输入、把回合结果发回飞书。
  *
- * 命令自己解析：`/help /new /sessions /status /stop /send /trace`。不进模型，
- * 也不写进会话历史。
+ * 命令自己解析：`/help /new /sessions /switch /status /stop /send /trace`。不进
+ * 模型，也不写进会话历史。
  */
 
 import { randomUUID } from 'node:crypto';
 
 import { DoneAlign } from './done-align.ts';
 import { buildContent } from './prompt-content.ts';
-import { SESSION_PAGE_SIZE, loadSessionCatalog, renderSessionList } from './session-list.ts';
+import { SESSION_PAGE_SIZE, loadSessionCatalog, markLabel, renderSessionList, sessionLabel } from './session-list.ts';
 import { SendWatcher } from './session-watch.ts';
 import { asRecord, textFromAssistantMessage } from './session-text.ts';
 import { handleSendCommand } from './standalone-send.ts';
+import { handleSwitchCommand } from './standalone-switch.ts';
 import type { StandaloneCommand } from './standalone-command.ts';
 import { HELP_TEXT, parseCommand } from './standalone-command.ts';
 import type { BusyMode, StandaloneController } from './standalone-types.ts';
@@ -150,6 +151,9 @@ export class StandaloneChat {
       return;
     }
 
+    // 先把绑定读进缓存：回复前缀按 `peek()` 判断，命令回执也要能立刻带上会话名。
+    await this.#bindings.get();
+
     this.#chatId = message.chatId;
     this.#lastUserMessageId = message.messageId;
 
@@ -178,6 +182,17 @@ export class StandaloneChat {
     if (entry === null) return;
 
     switch (entry.type) {
+      case 'session/title': {
+        const title = asRecord(entry.data)?.title;
+        if (typeof title !== 'string' || title.trim() === '') return;
+        const next = title.trim();
+        // 异步落盘前绑定可能已经切走：只改仍然指向这个会话的标题。
+        void this.#bindings
+          .get()
+          .then((current) => (current !== null && current.sessionId === sessionId ? this.#bindings.setTitle(next) : undefined))
+          .catch(() => undefined);
+        return;
+      }
       case 'turn/start':
         this.#running = true;
         this.#answer = '';
@@ -343,6 +358,20 @@ export class StandaloneChat {
       case 'sessions':
         await this.#showSessions(command.page);
         return false;
+      case 'switch':
+        await handleSwitchCommand(command.ref, {
+          controller: () => this.#controller(),
+          listing: this.#listing,
+          bindings: this.#bindings,
+          watcher: this.#watcher,
+          reply: (text) => this.#reply(text),
+          onSwitched: () => {
+            this.#running = false;
+            this.#answer = '';
+            this.#align.clear();
+          },
+        });
+        return false;
       default:
         await this.#reply(`不认识的命令：/${command.name}\n\n${HELP_TEXT}`);
         return false;
@@ -407,7 +436,14 @@ export class StandaloneChat {
 
     // 重启后事件可能先到（绑定还在、本次进程还没收到过消息）：退回主人最近一次的会话。
     const chatId = this.#chatId !== '' ? this.#chatId : (await this.#owners.get())?.chatId ?? '';
-    return this.#deliverTo(chatId, body, this.#lastUserMessageId);
+    return this.#deliverTo(chatId, this.#withSessionMark(body), this.#lastUserMessageId);
+  }
+
+  /** `/switch` 过来的会话：每条回复前标出会话名，一眼看出在跟哪个会话说话。 */
+  #withSessionMark(body: string): string {
+    const binding = this.#bindings.peek();
+    if (binding === null || binding.switched !== true) return body;
+    return `**${markLabel(sessionLabel(binding.title))}>**\n\n${body}`;
   }
 
   /** 发到指定会话；`/send` 的回答要回到发命令的那个聊天，不能跟着当前会话走。 */

@@ -18,6 +18,16 @@ test('绑定：写盘后新实例能读回，文件权限 0600', async () => {
   });
 });
 
+test('绑定：/switch 的标记与标题一起读回', async () => {
+  await withTempDir(async (dir) => {
+    const store = new DirectBindingStore({ dataDir: dir.path });
+    await store.set({ sessionId: 's_2', workspaceId: '', title: '乙', switched: true });
+
+    const reopened = new DirectBindingStore({ dataDir: dir.path });
+    assert.deepEqual(await reopened.get(), { sessionId: 's_2', workspaceId: '', title: '乙', switched: true });
+  });
+});
+
 test('绑定：改标题不丢会话；清除后回到 null', async () => {
   await withTempDir(async (dir) => {
     const store = new DirectBindingStore({ dataDir: dir.path });

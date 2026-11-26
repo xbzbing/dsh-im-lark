@@ -98,6 +98,11 @@ export class SendWatcher {
     return 'ok';
   }
 
+  /** 这个会话是否还有 `/send` 在等回答（切换前要拦）。 */
+  has(sessionId: string): boolean {
+    return this.#watches.has(sessionId);
+  }
+
   /** 提交失败时撤销刚登记的观察（不留下一个永远等不到的条目）。 */
   remove(sessionId: string): void {
     const watch = this.#watches.get(sessionId);
