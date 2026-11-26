@@ -111,12 +111,13 @@ Items editable in the panel are written to `$DSH_HOME/.dsh-im-lark/config.json` 
 | `/help` | List commands |
 | `/new` | Start a new session |
 | `/sessions [page]` | List recent sessions and their numbers, 10 per page |
+| `/switch <index or session id>` | Switch the current session; later replies are prefixed with `**session name>**` |
 | `/status` | Current session and runtime state |
 | `/stop` | Abort the running turn |
 | `/trace` | Model and elapsed time of the last answer |
 | `/send <index or session id> <text>` | Send to that session; its answer comes back here. Images allowed |
 
-`/send` is queued, so it does not interrupt the target session's running turn; sending to the current session behaves like a normal message.
+`/send` is queued, so it does not interrupt the target session's running turn; sending to the current session behaves like a normal message. A `/switch` binding and its prefix survive restarts and are cleared by `/new`; switching is refused while that session still has a `/send` waiting for its answer.
 
 ## CLI and slash command
 
