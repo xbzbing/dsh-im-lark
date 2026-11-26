@@ -6,7 +6,7 @@
  * 这里。
  */
 
-export const PLUGIN_VERSION = '0.1.6';
+export const PLUGIN_VERSION = '0.1.7';
 
 /** 传输层实现版本：协议客户端行为变化时递增，与插件版本解耦。 */
 export const CHANNEL_VERSION = '1';
