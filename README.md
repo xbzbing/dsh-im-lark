@@ -104,7 +104,7 @@ dsh plugin --profile web add file:/绝对路径/dsh-im-lark
     maxText: 2000           # 单条消息字符上限，超出自动切段
     typingIndicator: true   # 收到打 Get；回答送达后原消息追加 DONE（Get 不撤）
     replyStatus: false      # 回答末尾附加模型、耗时、token
-    directBusyMode: steer   # 独立会话里回合进行中又来消息：steer 插话 / queue 排队（旧值 interrupt 会迁移成 steer）
+    directBusyMode: steer   # 独立模式所有发送在目标回合进行中：steer 插话 / queue 排队（旧值 interrupt 迁移成 steer；/queue 固定排队）
     directWorkspaceId: ''   # 独立会话的工作区 id；留空用自动创建的默认工作区
     questionReminders: true # 独立模式下有问题/授权在等时发飞书提醒
     questionDelayMinutes: 5 # 提醒前等多久（0–120）：这段时间在 Web 端答完就不打扰
@@ -126,9 +126,10 @@ dsh plugin --profile web add file:/绝对路径/dsh-im-lark
 | `/status` | 当前会话与运行状态 |
 | `/stop` | 中止正在跑的回合 |
 | `/trace` | 查看上一条回答的模型与耗时 |
-| `/send <序号、0 或会话 id> <内容>` | 发到指定会话，那一轮的回答回到这里；`0` 是前台会话；可附图 |
+| `/send <序号、0 或会话 id> <内容>` | 发到指定会话，那一轮的回答回到这里；`0` 是前台会话；可附图；回合正在跑时按「回合内插话」设置处理 |
+| `/queue <序号、0 或会话 id> <内容>` | 与 `/send` 相同，但始终排队到目标当前回合之后 |
 
-`/send` 用排队提交，不打断目标会话正在跑的回合；目标是当前会话时与直接发消息一致。`/switch` 的换绑与前缀会跨重启保留，`/new` 会清掉；切到非前台会话后，回复前会加 `**会话名>**`，切回前台（序号 `0`）后前缀消失。前台会话固定为序号 `0`，不出现在 `/sessions` 里，避免回到前台后列表里又套一个自己。目标会话还有 `/send` 在等回答时不允许切换。旧版 `direct.json` 没有前台记录时，`/switch 0` 会提示用 `/new` 重新建会话。
+`/send` 与普通消息一样，在目标会话正在跑回合时按面板的「回合内插话」设置决定插进当前回合还是排队；`/queue` 参数相同，但始终排队到当前回合之后，不受该设置影响。`/switch` 的换绑与前缀会跨重启保留，`/new` 会清掉；切到非前台会话后，回复前会加 `**会话名>**`，切回前台（序号 `0`）后前缀消失。前台会话固定为序号 `0`，不出现在 `/sessions` 里，避免回到前台后列表里又套一个自己。目标会话还有投递在等回答时不允许切换。旧版 `direct.json` 没有前台记录时，`/switch 0` 会提示用 `/new` 重新建会话。
 
 ## 命令行与斜杠命令
 

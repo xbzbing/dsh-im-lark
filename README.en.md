@@ -93,7 +93,7 @@ Static config lives in the profile patch; restart to apply:
     maxText: 2000           # max characters per message; longer text is split automatically
     typingIndicator: true   # Get on receipt; DONE on the original message after delivery (Get is never removed)
     replyStatus: false      # append model, elapsed time and tokens to the answer
-    directBusyMode: steer   # a message arriving mid-turn in standalone mode: steer / queue (legacy interrupt migrates to steer)
+    directBusyMode: steer   # all standalone sends while the target turn is running: steer / queue (legacy interrupt migrates to steer; /queue always queues)
     directWorkspaceId: ''   # workspace id for standalone sessions; empty uses the auto-created default
     questionReminders: true # standalone: send a Feishu reminder when a question or approval is waiting
     questionDelayMinutes: 5 # how long to wait before reminding (0–120): answering in the Web UI within this window avoids it
@@ -115,9 +115,10 @@ Items editable in the panel are written to `$DSH_HOME/.dsh-im-lark/config.json` 
 | `/status` | Current session and runtime state |
 | `/stop` | Abort the running turn |
 | `/trace` | Model and elapsed time of the last answer |
-| `/send <index, 0, or session id> <text>` | Send to that session; its answer comes back here. `0` is the front session. Images allowed |
+| `/send <index, 0, or session id> <text>` | Send to that session; its answer comes back here. `0` is the front session. Images allowed; mid-turn behavior follows the steer setting |
+| `/queue <index, 0, or session id> <text>` | Same as `/send`, but always queues until the target's current turn ends |
 
-`/send` is queued, so it does not interrupt the target session's running turn; sending to the current session behaves like a normal message. A `/switch` binding and its prefix survive restarts and are cleared by `/new`; after switching to a non-front session, replies are prefixed with `**session name>**`, and returning to the front session (index `0`) drops it. The front session is always index `0` and is omitted from `/sessions`, so returning to it does not produce a self-referential list. Switching is refused while that session still has a `/send` waiting for its answer. If an older `direct.json` has no front-session record, `/switch 0` asks you to start a new session with `/new`.
+`/send` behaves like a normal message: while the target session is running a turn, the panel's steer setting decides whether it joins that turn or queues. `/queue` takes the same arguments but always queues until the current turn ends, regardless of the setting. A `/switch` binding and its prefix survive restarts and are cleared by `/new`; after switching to a non-front session, replies are prefixed with `**session name>**`, and returning to the front session (index `0`) drops it. The front session is always index `0` and is omitted from `/sessions`, so returning to it does not produce a self-referential list. Switching is refused while a delivery is still waiting for its answer. If an older `direct.json` has no front-session record, `/switch 0` asks you to start a new session with `/new`.
 
 ## CLI and slash command
 

@@ -25,7 +25,7 @@
 - `inbound.ts` / `outbound.ts`：事件进来、消息出去，纯转换 + 限速
 - `cards.ts`：卡片 JSON 构造与 PATCH 节流
 - `bridge.ts`：`my-superagent/v1` 的 provider / handle 实现
-- `standalone.ts`：独立会话与命令分发（解析在 `standalone-command.ts`，`/sessions` 编排在 `standalone-sessions.ts`，`/send` 编排在 `standalone-send.ts`，`/switch` 编排在 `standalone-switch.ts`）
+- `standalone.ts`：独立会话与命令分发（解析在 `standalone-command.ts`，`/sessions` 编排在 `standalone-sessions.ts`，`/send` 与 `/queue` 编排在 `standalone-send.ts`，`/switch` 编排在 `standalone-switch.ts`）
 - `session-list.ts` / `session-watch.ts`：`/sessions` 的列表与序号、`/send` 等一轮回答
 - `reactions.ts` / `done-align.ts`：表情反馈的取值与「哪条消息答完了」的对齐
 - `panel-*.ts`：面板 RPC 与 React
