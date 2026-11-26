@@ -12,9 +12,10 @@
  * 必须是对象（平台硬要求）。
  */
 
-import { CARD_BODY_BYTES_MAX } from '../shared/limits.ts';
+import { CARD_BODY_BYTES_MAX, CARD_COMPONENTS_MAX } from '../shared/limits.ts';
 import type { Interaction, InteractionAnswerDraft, InteractionAnswerItem, InteractionQuestion, Delivery } from './protocol.ts';
 import type { RejectReason } from './protocol.ts';
+import { interactionText, multiSelectSuffix, questionHeading, trimText } from './question-text.ts';
 
 export const CARD_SCHEMA = '2.0';
 
@@ -59,7 +60,24 @@ export function cardBytes(card: unknown): number {
 }
 
 export function cardFits(card: unknown): boolean {
-  return cardBytes(card) <= CARD_BODY_BYTES_MAX;
+  return cardBytes(card) <= CARD_BODY_BYTES_MAX && cardComponents(card) <= CARD_COMPONENTS_MAX;
+}
+
+/** 组件数：数所有带 `tag` 的对象（含 form 里的子控件），比平台口径略保守。 */
+export function cardComponents(card: unknown): number {
+  let count = 0;
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item);
+      return;
+    }
+    if (typeof node !== 'object' || node === null) return;
+    const record = node as Record<string, unknown>;
+    if (typeof record.tag === 'string') count += 1;
+    for (const value of Object.values(record)) walk(value);
+  };
+  walk(card);
+  return count;
 }
 
 /** 消息体：`content` 字段要的是 JSON 字符串，不是对象。 */
@@ -71,21 +89,31 @@ function optionText(option: { label: string; description?: string }): Record<str
   return { tag: 'lark_md', content: `**${option.label}**${option.description === undefined || option.description === '' ? '' : `\n${option.description}`}` };
 }
 
-function customInput(): Record<string, unknown> {
+/** 勾选器名：`answer_<题号>_<选项号>`。多题共用一张 form，题号让 name 全卡唯一。 */
+function checkerName(questionIndex: number, optionIndex: number): string {
+  return `answer_${questionIndex}_${optionIndex}`;
+}
+
+/** 自由文本输入名：无选项的题、以及有选项时的「其他」都用它。 */
+function inputName(questionIndex: number): string {
+  return `custom_${questionIndex}`;
+}
+
+function customInput(name: string, placeholder = '其他答案（可选）：填写后点提交'): Record<string, unknown> {
   return {
     tag: 'input',
-    name: 'custom_input',
-    placeholder: { tag: 'plain_text', content: '其他答案（可选）：填写后点提交' },
+    name,
+    placeholder: { tag: 'plain_text', content: placeholder },
     width: 'fill',
   };
 }
 
-function submitButton(value: Record<string, unknown>): Record<string, unknown> {
+function submitButton(value: Record<string, unknown>, label = '提交'): Record<string, unknown> {
   return {
     tag: 'button',
     name: 'ask_submit',
     type: 'primary',
-    text: { tag: 'plain_text', content: '提交' },
+    text: { tag: 'plain_text', content: label },
     form_action_type: 'submit',
     behaviors: [{ type: 'callback', value }],
   };
@@ -128,18 +156,11 @@ export function renderDeliveryCard(delivery: Delivery, options: DeliveryCardOpti
   const interaction = options.interaction ?? delivery.interaction;
   if (options.interactive !== false && interaction !== undefined) {
     if (!isAnswerable(interaction)) {
-      for (const question of interaction.questions) {
-        elements.push({ tag: 'markdown', content: `**${question.header ?? '请选择'}**\n${question.question}`, text_size: 'normal' });
-      }
-      elements.push({
-        tag: 'markdown',
-        content: '_这条交互包含多个问题，或需要审批/自定义输入；请在 DeepSeek Harness Web 端作答，审批也在 Web 端处理。_',
-        text_size: 'notation',
-      });
+      // 不能在 IM 作答的交互也要把题目、选项与回复指引交代清楚：
+      // 光给题干，用户既看不到选项，也不知道该去哪、怎么回。
+      elements.push({ tag: 'markdown', content: interactionText(interaction, { markdown: true }), text_size: 'normal' });
     } else {
-      for (const question of interaction.questions) {
-        elements.push(...renderQuestion(delivery.id, question));
-      }
+      elements.push({ tag: 'form', name: 'ask_form', elements: formElements(delivery.id, interaction.questions) });
     }
   }
 
@@ -154,54 +175,65 @@ export function renderDeliveryCard(delivery: Delivery, options: DeliveryCardOpti
 /**
  * 这套交互能不能在飞书卡片里答完。
  *
- * 核心要求一次提交全部问题；多问题时用户没法在一张卡上「先答一题、再答一题」，
- * 所以只对单问题、非审批、且有选项的交互渲染按钮；其余明确引导去 Web 端。
+ * 核心要求一次提交全部问题，所以多题必须收进**同一张 form** 一次提交（协议上限
+ * 10 题）。审批不代答；超出上限的交回 Web 端。无选项的题用输入框收自定义答案：
+ * 核心的桥路校验（`validateAnswer`）接受非空 custom。
  */
+export const MAX_ANSWER_QUESTIONS = 10;
+
 export function isAnswerable(interaction: Interaction): boolean {
-  if (interaction.questions.length !== 1) return false;
-  const question = interaction.questions[0]!;
-  return question.intent !== 'approval' && (question.options?.length ?? 0) > 0;
+  const { questions } = interaction;
+  if (questions.length === 0 || questions.length > MAX_ANSWER_QUESTIONS) return false;
+  return questions.every((question) => question.intent !== 'approval');
 }
 
-/** 一个问题：题干 + 选项按钮；审批类只提示、不给按钮。 */
-function renderQuestion(deliveryId: string, question: InteractionQuestion): unknown[] {
-  const label = question.header ?? '请选择';
-  const elements: unknown[] = [
-    { tag: 'markdown', content: `**${label}**\n${question.question}`, text_size: 'normal' },
+/** 一道题在 form 里的部分：题干 + 详情 + 单双选说明 + 勾选器（或输入框）。 */
+function questionFormPart(question: InteractionQuestion, index: number, total: number): unknown[] {
+  const parts: unknown[] = [
+    { tag: 'markdown', content: `${questionHeading(question, index, total)}${multiSelectSuffix(question)}`, text_size: 'normal' },
   ];
-
-  if (question.intent === 'approval') {
-    elements.push({ tag: 'markdown', content: '_审批请在 DeepSeek Harness Web 端处理。_', text_size: 'notation' });
-    return elements;
+  if (question.detail !== undefined && question.detail !== '') {
+    parts.push({ tag: 'markdown', content: question.detail, text_size: 'normal' });
   }
 
   const options = question.options ?? [];
-  if (options.length === 0) return elements;
+  if (options.length === 0) {
+    parts.push({ tag: 'markdown', content: '直接在下方输入框作答，填好后点「提交」。', text_size: 'notation' });
+    parts.push(customInput(inputName(index), '在这里作答：填写后点提交'));
+    return parts;
+  }
 
   // 飞书卡片没有单选按钮组：单选和多选都用勾选器，靠文案说明区别，
-  // 两者都必须点「提交」才生效（值走 form_value.answer_<下标> / custom_input）。
-  elements.push({
+  // 两者都必须点「提交」才生效（值走 form_value.answer_<题号>_<选项号>）。
+  parts.push({
     tag: 'markdown',
     content: question.multiSelect === true
       ? '多选：可以勾选多项，选好后点「提交」。'
       : '单选：只能勾选一项，选好后点「提交」。',
     text_size: 'notation',
   });
-  elements.push({
-    tag: 'form',
-    name: 'ask_form',
-    elements: [
-      ...options.map((option, index) => ({
-        tag: 'checker',
-        name: `answer_${index}`,
-        checked: false,
-        overall_checkable: false,
-        text: optionText(option),
-      })),
-      customInput(),
-      submitButton({ d: deliveryId, q: question.id }),
-    ],
+  options.forEach((option, optionIndex) => {
+    parts.push({
+      tag: 'checker',
+      name: checkerName(index, optionIndex),
+      checked: false,
+      overall_checkable: false,
+      text: optionText(option),
+    });
   });
+  parts.push(customInput(inputName(index)));
+  return parts;
+}
+
+/**
+ * 整个交互的 form：所有题目的控件收在同一张表单里，一个「提交」按钮整卡提交。
+ *
+ * form 容器只能放在卡片根部，所以题干也进 form；控件 `name` 全卡唯一，用题号区分。
+ */
+function formElements(deliveryId: string, questions: readonly InteractionQuestion[]): unknown[] {
+  const elements: unknown[] = [];
+  questions.forEach((question, index) => elements.push(...questionFormPart(question, index, questions.length)));
+  elements.push(submitButton({ d: deliveryId }, questions.length > 1 ? `提交 ${questions.length} 题答案` : '提交'));
   return elements;
 }
 
@@ -312,134 +344,56 @@ export class InteractionStore {
 }
 
 /**
- * 把按钮回调翻译成协议里的作答。
+ * 把表单提交翻译成协议里的作答：一道题一个答项，**一次提交必须答完全部题目**。
  *
  * 约定：
- * - value 里的 `d`/`q`/`o` 是我们自己写的，短键省卡片体积；
- * - 多选的 `action.option` 可能是单个值、逗号串或数组，三种都认；
- * - 审批类一律 `not-allowed`（协议里 IM 不代答审批）。
+ * - value 里的 `d` 是交付 id（短键省卡片体积，且 value 必须是对象）；
+ * - 勾选值在 `form_value.answer_<题号>_<选项号>`，自由文本在 `form_value.custom_<题号>`；
+ * - 少答、单选勾多项都在这里拒绝并指出题号，桥把原因写回卡片让用户重填；
+ * - 审批类不会被登记为可作答（见 `isAnswerable`），真出现就跳过它。
  */
 export function answerFromAction(
   value: Record<string, unknown>,
-  option: unknown,
   formValues: Record<string, unknown> | undefined,
   sender: string,
   store: InteractionStore,
   now: number,
 ): InteractionAnswerDraft | { reason: RejectReason; detail?: string } {
   const deliveryId = typeof value.d === 'string' ? value.d : '';
-  const questionId = typeof value.q === 'string' ? value.q : '';
-  if (deliveryId === '' || questionId === '') return { reason: 'invalid', detail: '回调缺少交付或问题 id' };
+  if (deliveryId === '') return { reason: 'invalid', detail: '回调缺少交付 id' };
 
   const pending = store.get(deliveryId);
   if (pending === undefined) return { reason: 'unknown', detail: '交付已不在内存里（可能已重启）' };
   if (pending.answered) return { reason: 'settled', detail: '这条已经作答' };
   if (pending.expiresAt !== undefined && pending.expiresAt <= now) return { reason: 'expired' };
+  if (formValues === undefined) return { reason: 'invalid-answer', detail: '回调里没有表单值' };
 
-  const question = pending.questions.find((item) => item.id === questionId);
-  if (question === undefined) return { reason: 'invalid', detail: '问题不在这次交付里' };
-  if (question.intent === 'approval') return { reason: 'not-allowed', detail: '审批请在 Web 端处理' };
+  const answers: InteractionAnswerItem[] = [];
+  const missing: number[] = [];
+  let singleOverflow = 0;
 
-  const selected = resolveSelection(question, value, option, formValues);
-  if (selected === undefined) return { reason: 'invalid-answer', detail: '无法从回调里认出选项' };
-  if (question.multiSelect !== true && selected.selected.length > 1) {
-    return { reason: 'invalid-answer', detail: '单选题只能勾选一项' };
-  }
+  pending.questions.forEach((question, index) => {
+    if (question.intent === 'approval') return;
+    const options = question.options ?? [];
+    const checked = options
+      .map((option, optionIndex) => (formValues[checkerName(index, optionIndex)] === true ? option.label : undefined))
+      .filter((label): label is string => label !== undefined);
+    const custom = trimText(formValues[inputName(index)]);
 
-  return {
-    deliveryId,
-    sender,
-    answers: [{
-      id: question.id,
-      selected: selected.selected,
-      ...(selected.custom === undefined ? {} : { custom: selected.custom }),
-    }],
-    at: now,
-  };
-}
-
-/** 把按钮 index / 多选值还原成选项文案。 */
-function resolveSelection(
-  question: InteractionQuestion,
-  value: Record<string, unknown>,
-  option: unknown,
-  formValues: Record<string, unknown> | undefined,
-): { selected: string[]; custom?: string } | undefined {
-  const options = question.options ?? [];
-  const fromIndices = (raw: unknown): string[] | undefined => {
-    const indices = toIndexList(raw);
-    if (indices === undefined) return undefined;
-    const labels = indices.map((index) => options[index]?.label).filter((label): label is string => label !== undefined);
-    return labels.length === 0 ? undefined : labels;
-  };
-
-  if (typeof value.o === 'number') return pick(fromIndices([value.o]));
-  if (typeof value.o === 'string') return pick(fromIndices([value.o]));
-
-  // 表单提交（勾选框 + 「其他」输入）：answer_<下标> 为 true，custom_input 为自由文本。
-  const custom = customOf(formValues);
-  if (formValues !== undefined) {
-    const checked = Object.entries(formValues)
-      .filter(([key, value]) => /^answer_(\d+)$/u.test(key) && value === true)
-      .map(([key]) => Number(key.slice('answer_'.length)))
-      .filter((index) => options[index] !== undefined)
-      .sort((left, right) => left - right);
-    if (checked.length > 0 || custom !== undefined) {
-      if (question.multiSelect !== true && custom !== undefined) return { selected: [], custom };
-      return { selected: checked.map((index) => options[index]!.label), ...(custom === undefined ? {} : { custom }) };
+    if (options.length > 0 && question.multiSelect !== true && checked.length > 1) singleOverflow = index + 1;
+    if (checked.length === 0 && custom === undefined) {
+      missing.push(index + 1);
+      return;
     }
+    answers.push({ id: question.id, selected: checked, ...(custom === undefined ? {} : { custom }) });
+  });
+
+  if (singleOverflow > 0) {
+    return { reason: 'invalid-answer', detail: `第 ${singleOverflow} 题是单选题，只能勾选一项` };
   }
-  const fromForm = formValues?.answer;
-  if (fromForm !== undefined) {
-    const labels = fromIndices(fromForm);
-    if (labels !== undefined) return pick(labels);
+  if (missing.length > 0) {
+    return { reason: 'invalid-answer', detail: `第 ${missing.join('、')} 题还没有作答；勾选或填写后点「提交」` };
   }
-
-  // 多选：数组优先；字符串可能是 "0,2"、"0%2C2" 或单个值。
-  const multi = fromIndices(option);
-  if (multi !== undefined) return pick(multi);
-
-  // 有些客户端直接把选项文案回传，认文案兜底。
-  const labels = toStringList(option).filter((text) => options.some((item) => item.label === text));
-  return pick(labels.length === 0 ? undefined : labels);
+  return { deliveryId, sender, answers, at: now };
 }
 
-function pick(selected: string[] | undefined): { selected: string[] } | undefined {
-  return selected === undefined ? undefined : { selected };
-}
-
-/** 表单里「其他」输入：空串当没填。 */
-function customOf(formValues: Record<string, unknown> | undefined): string | undefined {
-  const raw = formValues?.custom_input;
-  if (typeof raw !== 'string') return undefined;
-  const text = raw.trim();
-  return text === '' ? undefined : text;
-}
-
-function toIndexList(raw: unknown): number[] | undefined {
-  const items = Array.isArray(raw) ? raw : [raw];
-  const indices: number[] = [];
-
-  for (const item of items) {
-    if (typeof item === 'number') {
-      if (!Number.isInteger(item) || item < 0) return undefined;
-      indices.push(item);
-      continue;
-    }
-    if (typeof item !== 'string') continue;
-    for (const text of item.split(',')) {
-      const trimmed = text.trim();
-      if (trimmed === '') continue;
-      const parsed = Number(trimmed);
-      if (!Number.isInteger(parsed) || parsed < 0) return undefined;
-      indices.push(parsed);
-    }
-  }
-  return indices.length === 0 ? undefined : indices;
-}
-
-function toStringList(raw: unknown): string[] {
-  if (Array.isArray(raw)) return raw.filter((item): item is string => typeof item === 'string');
-  if (typeof raw === 'string') return raw.split(',').map((item) => item.trim());
-  return [];
-}

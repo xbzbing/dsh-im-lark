@@ -266,7 +266,7 @@ test('桥：重启后还没收到消息时，从本机 owner 映射找回会话'
   assert.deepEqual(sentChatIds, ['oc_seed']);
 });
 
-test('桥：多问题交互不登记（IM 无法一次答完，交回 Web）', async () => {
+test('桥：多问题交互登记为可作答，一次提交答完全部题目', async () => {
   const { provider, bridge } = fixture();
   const core = coreHandle();
   bridge.attach(core.handle);
@@ -284,7 +284,57 @@ test('桥：多问题交互不登记（IM 无法一次答完，交回 Web）', a
   });
 
   assert.equal(receipt.status, 'sent');
-  assert.equal(bridge.interactions.size, 0);
+  assert.equal(bridge.interactions.size, 1);
+
+  const result = await bridge.applyCardAction({
+    eventId: 'ev_multi_one',
+    messageId: 'om_1',
+    chatId: 'oc_chat',
+    operatorOpenId: 'ou_owner',
+    value: { d: 'dlv_multi' },
+    formValues: { answer_0_0: true, answer_1_0: true },
+  });
+
+  assert.deepEqual(result, { accepted: true });
+  assert.deepEqual(core.answers[0]!.answers, [
+    { id: 'q1', selected: ['一'] },
+    { id: 'q2', selected: ['二'] },
+  ]);
+});
+
+test('桥：多题只答一半时整单退回并重画卡片，指出缺哪一题', async () => {
+  const { provider, bridge, patches } = fixture();
+  const core = coreHandle();
+  bridge.attach(core.handle);
+
+  await provider.deliver({
+    ...DELIVERY,
+    id: 'dlv_multi',
+    intent: 'action',
+    interaction: {
+      questions: [
+        { id: 'q1', question: '甲？', options: [{ label: '一' }] },
+        { id: 'q2', question: '乙？', options: [{ label: '二' }] },
+      ],
+    },
+  });
+
+  const result = await bridge.applyCardAction({
+    eventId: 'ev_multi_half',
+    messageId: 'om_1',
+    chatId: 'oc_chat',
+    operatorOpenId: 'ou_owner',
+    value: { d: 'dlv_multi' },
+    formValues: { answer_0_0: true },
+  });
+
+  assert.equal(result.accepted, false);
+  if (!result.accepted) assert.equal(result.reason, 'invalid-answer');
+  assert.equal(core.answers.length, 0, '缺题不能交核心');
+  // 表单提交是一次性的：说明要写回这张卡，勾选框还在。
+  assert.equal(patches.length, 1);
+  assert.match(JSON.stringify(patches[0]), /第 2 题/u);
+  assert.match(JSON.stringify(patches[0]), /"tag":"checker"/u);
 });
 
 test('桥：流式修订原地更新，迟到修订不产生操作', async () => {
@@ -352,7 +402,8 @@ test('桥：交互交付登记待作答，作答后改写终态卡', async () =>
     messageId: 'om_1',
     chatId: 'oc_chat',
     operatorOpenId: 'ou_owner',
-    value: { d: 'dlv_ask', q: 'q1', o: 1 },
+    value: { d: 'dlv_ask' },
+    formValues: { answer_0_1: true },
   });
 
   assert.deepEqual(result, { accepted: true });
@@ -385,7 +436,8 @@ test('桥：审批类问题不允许在 IM 作答', async () => {
     messageId: 'om_1',
     chatId: 'oc_chat',
     operatorOpenId: 'ou_owner',
-    value: { d: 'dlv_approve', q: 'q1', o: 0 },
+    value: { d: 'dlv_approve' },
+    formValues: { answer_0_0: true },
   });
 
   assert.equal(result.accepted, false);
@@ -476,7 +528,8 @@ test('桥：核心拒绝作答时重画同一张卡并写清原因', async () =>
     messageId: 'om_1',
     chatId: 'oc_chat',
     operatorOpenId: 'ou_owner',
-    value: { d: 'dlv_ask2', q: 'q1', o: 0 },
+    value: { d: 'dlv_ask2' },
+    formValues: { answer_0_0: true },
   });
 
   assert.equal(result.accepted, false);
@@ -504,7 +557,8 @@ test('桥：卡已失效时改成失效态，去掉勾选框只留说明', async
     messageId: 'om_1',
     chatId: 'oc_chat',
     operatorOpenId: 'ou_owner',
-    value: { d: 'dlv_ask2', q: 'q1', o: 0 },
+    value: { d: 'dlv_ask2' },
+    formValues: { answer_0_0: true },
   });
 
   assert.equal(result.accepted, false);
@@ -528,7 +582,8 @@ test('桥：核心回「已作答」时不再提示', async () => {
     messageId: 'om_1',
     chatId: 'oc_chat',
     operatorOpenId: 'ou_owner',
-    value: { d: 'dlv_ask2', q: 'q1', o: 0 },
+    value: { d: 'dlv_ask2' },
+    formValues: { answer_0_0: true },
   });
 
   assert.equal(result.accepted, false);
@@ -543,19 +598,19 @@ test('桥：单选勾了多项时每次刷新卡片，改成一项即可通过',
 
   await provider.deliver(ASK);
 
-  const base = { messageId: 'om_1', chatId: 'oc_chat', operatorOpenId: 'ou_owner', value: { d: 'dlv_ask2', q: 'q1' } };
-  const first = await bridge.applyCardAction({ ...base, eventId: 'ev_multi_1', formValues: { answer_0: true, answer_1: true } });
+  const base = { messageId: 'om_1', chatId: 'oc_chat', operatorOpenId: 'ou_owner', value: { d: 'dlv_ask2' } };
+  const first = await bridge.applyCardAction({ ...base, eventId: 'ev_multi_1', formValues: { answer_0_0: true, answer_0_1: true } });
 
   assert.equal(first.accepted, false);
   if (!first.accepted) assert.equal(first.reason, 'invalid-answer');
   // 每次拒绝都重画这张卡：飞书的表单提交是一次性的，不重画就没法再提交。
   assert.equal(patches.length, 1);
-  assert.match(JSON.stringify(patches[0]), /单选题只能勾一项/u);
+  assert.match(JSON.stringify(patches[0]), /第 1 题是单选题，只能勾选一项/u);
   assert.equal(core.answers.length, 0);
   // 提示写在卡上，不额外发消息。
   assert.equal(contents.length, 1);
 
-  const ok = await bridge.applyCardAction({ ...base, eventId: 'ev_multi_2', formValues: { answer_0: true } });
+  const ok = await bridge.applyCardAction({ ...base, eventId: 'ev_multi_2', formValues: { answer_0_0: true } });
   assert.deepEqual(ok, { accepted: true });
   assert.deepEqual(core.answers[0]!.answers, [{ id: 'q1', selected: ['甲'] }]);
   assert.equal(patches.length, 2);

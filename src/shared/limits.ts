@@ -9,6 +9,9 @@
 /** 卡片请求体上限 30 KB；按 UTF-8 字节计，留出 JSON 转义与组件开销。 */
 export const CARD_BODY_BYTES_MAX = 28 * 1024;
 
+/** 卡片组件数上限 200（数所有带 `tag` 的对象，比平台口径略保守）。 */
+export const CARD_COMPONENTS_MAX = 200;
+
 /** 文本消息请求体上限 150 KB；我们远达不到，仍按它兜一道。 */
 export const TEXT_BODY_BYTES_MAX = 140 * 1024;
 

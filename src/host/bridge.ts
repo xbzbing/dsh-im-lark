@@ -9,13 +9,14 @@
  */
 
 import { DEFAULT_MAX_TEXT_CHARS } from '../shared/limits.ts';
-import { InteractionStore, answerFromAction, renderAnsweredCard, renderDeliveryCard, renderRejectedCard, renderRetryCard, renderSupersededCard, cardFits } from './cards.ts';
+import { InteractionStore, answerFromAction, isAnswerable, renderAnsweredCard, renderDeliveryCard, renderRejectedCard, renderRetryCard, renderSupersededCard, cardFits } from './cards.ts';
 import type { Card } from './cards.ts';
 import type { LarkApi } from './lark/api.ts';
 import type { LarkLogger } from './lark/connection.ts';
 import type { LarkCardAction } from './lark/types.ts';
 import { OutboundChannel } from './outbound.ts';
 import { PROTOCOL_V1 } from './protocol.ts';
+import { interactionText } from './question-text.ts';
 import type {
   AcceptResult,
   BridgeCapabilities,
@@ -38,7 +39,8 @@ const CAPABILITIES: BridgeCapabilities = {
     multiChoice: true,
     freeText: true,
     maxOptions: 20,
-    maxQuestions: 1,
+    // 多题收进同一张表单一次提交，所以能答满协议上限（`maxQuestions` schema 封顶 10）。
+    maxQuestions: 10,
     updateAfterAnswer: 'any',
   }),
   edit: Object.freeze({ scope: 'any', minIntervalMs: 2_000, maxLifetimeMs: 14 * 24 * 60 * 60 * 1000 }),
@@ -96,7 +98,7 @@ const REJECT_NOTES: Record<Exclude<RejectReason, 'settled'>, string> = {
   'wrong-bridge': '这张卡不属于当前接入的机器人，请在 Web 端作答。',
   'not-delivered': '这张卡没有真正发出去，请在 Web 端作答。',
   'not-allowed': '审批要在 Web 端处理，飞书里不代答。',
-  'invalid-answer': '没认出这次选择：单选题只能勾一项，勾选（或填「其他」）后点「提交」。',
+  'invalid-answer': '没认出这次选择：单选题只能勾一项，选好后点「提交」。',
 };
 
 /** 这些原因意味着卡不能再答：改成失效态，别留一排还能点的勾选框。 */
@@ -208,7 +210,9 @@ export function createLarkBridge(deps: BridgeDeps): LarkBridge {
     const useCard = cardFits(card);
     // 交互卡装不下时明确降级并回失败码：只发纯文本再回「已送达」会让核心白等作答。
     const interactionDropped = delivery.interaction !== undefined && !useCard;
-    const fallbackNote = interactionDropped ? '\n\n（内容超过卡片上限，交互已降级为纯文本；请在 Web 端作答。）' : '';
+    const fallbackNote = interactionDropped
+      ? '\n\n（内容超过卡片上限，交互已降级为纯文本；可直接回复文字作答，或到 Web 端处理。）'
+      : '';
     const replyTarget = delivery.inReplyTo === undefined ? undefined : inbound.get(delivery.inReplyTo);
 
     let receipt: Awaited<ReturnType<OutboundChannel['deliver']>>;
@@ -256,7 +260,7 @@ export function createLarkBridge(deps: BridgeDeps): LarkBridge {
       delivery.interaction !== undefined &&
       messageId !== undefined &&
       useCard &&
-      delivery.interaction.questions.length === 1
+      isAnswerable(delivery.interaction)
     ) {
       // 同一交付被重投时不要把它从「已作答」打回待作答。
       const previous = interactions.get(deliveryId);
@@ -281,9 +285,9 @@ export function createLarkBridge(deps: BridgeDeps): LarkBridge {
       ...(receipt.messageIds.length === 0 ? {} : { bridgeMessageIds: receipt.messageIds }),
       messagesSent: receipt.messagesSent,
     };
-    // 内容已经送达，只是交互改在 Web 端作答；回成功避免核心重投或换路由。
+    // 内容已经送达，只是交互改在文字上作答；回成功避免核心重投或换路由。
     return interactionDropped
-      ? { ...sent, error: '交互卡片超过平台上限，已降级为纯文本；请在 Web 端作答' }
+      ? { ...sent, error: '交互卡片超过平台上限，已降级为纯文本；可在飞书回复文字作答，或到 Web 端处理' }
       : sent;
   }
 
@@ -349,9 +353,11 @@ export function createLarkBridge(deps: BridgeDeps): LarkBridge {
     action: LarkCardAction,
     reason: RejectReason,
     deliveryId: string | undefined,
+    detail?: string,
   ): Promise<void> {
     if (reason === 'settled') return; // 已经答过了，再提示只会吵。
-    const note = REJECT_NOTES[reason];
+    // 具体原因（第几题没答、第几题多勾了）比通用文案有用，有就用它。
+    const note = detail !== undefined && detail !== '' ? detail : REJECT_NOTES[reason];
     const terminal = TERMINAL_REJECTS.has(reason);
     const record = deliveryId === undefined ? undefined : delivered.get(deliveryId);
     if (record !== undefined) {
@@ -376,9 +382,16 @@ export function createLarkBridge(deps: BridgeDeps): LarkBridge {
 
   async function applyCardAction(action: LarkCardAction): Promise<AcceptResult> {
     const deliveryId = typeof action.value.d === 'string' ? action.value.d : undefined;
-    const result = answerFromAction(action.value, action.option, action.formValues, action.operatorOpenId, interactions, now());
+    // 审批卡不登记待作答（见 isAnswerable），回调到这里就没有记录；不先认出来会
+    // 被当成「已失效」并提示重启过，与实际原因（IM 不代答审批）相差很远。
+    const sentRecord = deliveryId === undefined ? undefined : delivered.get(deliveryId);
+    if (sentRecord?.delivery.interaction?.questions.some((question) => question.intent === 'approval') === true) {
+      await noteRejected(action, 'not-allowed', deliveryId);
+      return { accepted: false, reason: 'not-allowed', detail: '审批请在 Web 端处理' };
+    }
+    const result = answerFromAction(action.value, action.formValues, action.operatorOpenId, interactions, now());
     if ('reason' in result) {
-      await noteRejected(action, result.reason, deliveryId);
+      await noteRejected(action, result.reason, deliveryId, result.detail);
       return { accepted: false, reason: result.reason, ...(result.detail === undefined ? {} : { detail: result.detail }) };
     }
 
@@ -468,9 +481,19 @@ function failure(deliveryId: string, errorCode: NonNullable<Receipt['errorCode']
   return { deliveryId, status: 'failed', messagesSent: 0, errorCode, error: truncateError(error) };
 }
 
-/** 卡片装不下时退回「标题 + 正文」：由 outbound 按文本分条。 */
+/**
+ * 卡片装不下时退回文本：标题 + 正文 + 详情 + 交互。
+ *
+ * 交互必须一起带上——降级成文本后用户只能文字作答，不给题目和选项就没法答；
+ * 文本消息不渲染 Markdown，所以按纯文本形态渲染（不加粗、不用星号）。
+ */
 function renderFallbackText(delivery: Delivery): string {
-  return [`# ${delivery.title}`, delivery.body, delivery.detail ?? ''].filter((part) => part !== '').join('\n\n');
+  const interaction = delivery.interaction === undefined
+    ? ''
+    : interactionText(delivery.interaction, { markdown: false });
+  return [`# ${delivery.title}`, delivery.body, delivery.detail ?? '', interaction]
+    .filter((part) => part !== '')
+    .join('\n\n');
 }
 
 function errorText(error: unknown): string {
