@@ -1,6 +1,6 @@
 {
   "name": "dsh-im-lark",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "type": "module",
   "description": "把飞书（Lark）接入 DeepSeek Harness 的 IM 桥插件",
   "license": "MIT",
