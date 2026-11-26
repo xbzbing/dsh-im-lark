@@ -18,6 +18,7 @@ import { parseCardAction, parseMessageEvent } from './inbound.ts';
 import type { LarkBridge } from './bridge.ts';
 import type { AcceptResult, OwnerFile, OwnerImage, OwnerMessageDraft } from './protocol.ts';
 import type { ClaimOutcome } from './claim.ts';
+import { extensionOf } from './media.ts';
 import { addReaction, REACTION_ACK } from './reactions.ts';
 import { SeenStore } from './state/seen.ts';
 
@@ -359,17 +360,4 @@ function mediaTypeOfName(name: string): string | undefined {
   if (lower.endsWith('.md')) return 'text/markdown';
   if (lower.endsWith('.txt') || lower.endsWith('.log')) return 'text/plain';
   return undefined;
-}
-
-function extensionOf(mediaType: string): string {
-  switch (mediaType) {
-    case 'image/jpeg':
-      return 'jpg';
-    case 'image/webp':
-      return 'webp';
-    case 'image/gif':
-      return 'gif';
-    default:
-      return 'png';
-  }
 }

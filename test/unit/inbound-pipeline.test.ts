@@ -132,13 +132,17 @@ function messageEvent(fields: {
   };
 }
 
-function cardActionEvent(value: Record<string, unknown>, operator = 'ou_owner'): unknown {
+function cardActionEvent(
+  value: Record<string, unknown>,
+  operator = 'ou_owner',
+  formValues?: Record<string, unknown>,
+): unknown {
   return {
     schema: '2.0',
     header: { event_id: `ev_card_${(sequence += 1)}`, event_type: 'card.action.trigger' },
     event: {
       operator: { open_id: operator },
-      action: { value, tag: 'button' },
+      action: { value, tag: 'button', ...(formValues === undefined ? {} : { form_value: formValues }) },
       context: { open_message_id: 'om_1', open_chat_id: 'oc_1' },
     },
   };
@@ -349,7 +353,7 @@ test('流水线：卡片回调转成作答，并改写终态卡', async () => {
     interaction: { questions: [{ id: 'q1', question: '选一个', options: [{ label: '甲' }, { label: '乙' }] }] },
   });
 
-  pipeline.handleCardAction(cardActionEvent({ d: 'dlv_ask', q: 'q1', o: 0 }));
+  pipeline.handleCardAction(cardActionEvent({ d: 'dlv_ask' }, 'ou_owner', { answer_0_0: true }));
   await pipeline.drain();
   await new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -397,7 +401,7 @@ test('流水线：提醒认不出卡片回调时仍交给核心桥', async () =>
     interaction: { questions: [{ id: 'q1', question: '选一个', options: [{ label: '甲' }] }] },
   });
 
-  pipeline.handleCardAction(cardActionEvent({ d: 'dlv_ask', q: 'q1', o: 0 }));
+  pipeline.handleCardAction(cardActionEvent({ d: 'dlv_ask' }, 'ou_owner', { answer_0_0: true }));
   await pipeline.drain();
   await new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -416,7 +420,7 @@ test('流水线：非主人的卡片回调被忽略', async () => {
     interaction: { questions: [{ id: 'q1', question: '选一个', options: [{ label: '甲' }] }] },
   });
 
-  pipeline.handleCardAction(cardActionEvent({ d: 'dlv_ask', q: 'q1', o: 0 }, 'ou_stranger'));
+  pipeline.handleCardAction(cardActionEvent({ d: 'dlv_ask' }, 'ou_stranger', { answer_0_0: true }));
   await pipeline.drain();
   assert.equal(answers.length, 0);
 });
@@ -434,13 +438,13 @@ test('流水线：同一张卡改选项再提交仍会被处理', async () => {
   });
 
   // 第一次提交勾了两项：被拒（单选只能一项），但待作答要保留。
-  pipeline.handleCardAction(formSubmitEvent({ d: 'dlv_form', q: 'q1' }, { answer_0: true, answer_1: true }));
+  pipeline.handleCardAction(formSubmitEvent({ d: 'dlv_form' }, { answer_0_0: true, answer_0_1: true }));
   await pipeline.drain();
   assert.equal(answers.length, 0);
 
   // 改勾一项再提交：同样的 value、同样的消息 id，只有 form_value 变了。
   // 去重键如果只看 value，这次会被当成平台重推丢掉——真机上的「此后不能再答」。
-  pipeline.handleCardAction(formSubmitEvent({ d: 'dlv_form', q: 'q1' }, { answer_0: true }));
+  pipeline.handleCardAction(formSubmitEvent({ d: 'dlv_form' }, { answer_0_0: true }));
   await pipeline.drain();
 
   assert.equal(answers.length, 1);
@@ -459,7 +463,7 @@ test('流水线：同一份表单回调在重推窗口内只处理一次', async
     interaction: { questions: [{ id: 'q1', question: '选一个', options: [{ label: '甲' }, { label: '乙' }] }] },
   });
 
-  const event = formSubmitEvent({ d: 'dlv_form', q: 'q1' }, { answer_0: true });
+  const event = formSubmitEvent({ d: 'dlv_form' }, { answer_0_0: true });
   pipeline.handleCardAction(event);
   pipeline.handleCardAction(event);
   await pipeline.drain();
