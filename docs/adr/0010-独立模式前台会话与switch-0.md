@@ -6,12 +6,12 @@
 
 ## 决策
 
-- 在 `direct.json` 里单独记前台：`frontSessionId` 与 `frontTitle`。旧版没有这两个字段时，未切换过的绑定按前台迁移；已经切走又没有前台记录的，`/switch 0` 明确说没有前台会话。
-- 前台固定为序号 `0`，别名 `0` 与 `front`（大小写不敏感），`/switch` 与 `/send` 都认。`/sessions` 的快照和显示都排除前台，序号只对应其它会话，避免切回前台后列表里再套一个自己。
+- 在 `direct.json` 里单独记前台：`frontSessionId` 与 `frontTitle`。旧版没有这两个字段时，未切换过的绑定按前台迁移；已经切走又没有前台记录的，`/switch 0` 与 `/send 0` 明确提示用 `/new` 重建。
+- 前台固定为序号 `0`，别名 `0` 与 `front`（大小写不敏感），`/switch` 与 `/send` 都认。`/sessions` 的快照和显示都排除前台，序号只对应其它会话，避免切回前台后列表里再套一个自己；精确的前台会话 id 也按回前台处理。
 - `/switch 0`/`front` 回到前台时不写 `switched`，回复前缀随之消失；切到非前台会话才写 `switched: true`。`/new` 清掉绑定，也清掉前台。
 - 切走期间收到前台会话的 `session/title` 时更新 `frontTitle`；回到前台时优先用列表里的最新标题，列表没给才用记住的标题。
 - 换到其它会话（含回到前台）清空 `DoneAlign` 并复位运行态；切到当前会话不清。目标还有 `/send` 在等回答时拒绝切换，前台也一样。
-- `DirectBindingStore` 的写入串行化：标题事件与 `/switch` 可能同一毫秒发生，不能让后写的旧绑定覆盖先写的新标题；临时文件名也加随机后缀，避免同毫秒 rename 互相踩。
+- `DirectBindingStore` 的状态变更统一走 `update` 队列（读改写）：标题事件与 `/switch` 交错时，后执行的变更总能读到前一次的结果，不会用旧快照覆盖新标题；首次读盘 single-flight；临时文件名加随机 UUID，避免同毫秒 rename 互相踩。
 
 ## 后果
 
