@@ -5,7 +5,7 @@
  * 只有核心不在/开关关掉时才会走到这里。所以这里不再判断「要不要让位」，只负责
  * 把消息变成会话输入、把回合结果发回飞书。
  *
- * 命令自己解析：`/help /new /sessions /switch /status /stop /send /trace`。不进
+ * 命令自己解析：`/help /new /sessions /switch /status /stop /send /queue /trace`。不进
  * 模型，也不写进会话历史。
  */
 
@@ -172,7 +172,7 @@ export class StandaloneChat {
     else this.#align.push(message.messageId, this.#busyMode());
   }
 
-  /** `session/event`：`/send` 的目标会话与绑定会话各走一条路。 */
+  /** `session/event`：投递目标会话与绑定会话各走一条路。 */
   handleEvent(sessionId: string, event: unknown): void {
     this.#watcher.handleEvent(sessionId, event);
 
@@ -268,14 +268,13 @@ export class StandaloneChat {
     return true;
   }
 
-  async #submit(text: string, draft: OwnerMessageDraft): Promise<string | null> {
+  async #submit(text: string, draft: OwnerMessageDraft, mode = this.#busyMode()): Promise<string | null> {
     const controller = this.#controller();
     if (controller === null) return '独立模式不可用：宿主没有会话控制器。消息没有进会话。';
 
     try {
       const sessionId = await this.#ensureSession(controller);
       const content = buildContent(text, draft);
-      const mode = this.#busyMode();
       const accepted = await controller.prompt(
         { requestId: randomUUID(), sessionId, mode, content, clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone },
         AbortSignal.timeout(this.#submitTimeoutMs),
@@ -350,6 +349,7 @@ export class StandaloneChat {
         );
         return false;
       case 'send':
+      case 'queue':
         return handleSendCommand(command, messageId, draft, {
           controller: () => this.#controller(),
           listing: this.#listing,
@@ -358,10 +358,11 @@ export class StandaloneChat {
           chatId: this.#chatId,
           submitTimeoutMs: this.#submitTimeoutMs,
           logger: this.#logger,
-          submitCurrent: (text, value) => this.#submit(text, value),
-          pushAlign: (id) => this.#align.push(id, this.#busyMode()),
+          submitCurrent: (text, value, mode) => this.#submit(text, value, mode),
+          pushAlign: (id, mode) => this.#align.push(id, mode),
+          busyMode: () => this.#busyMode(),
           reply: (text) => this.#reply(text),
-        });
+        }, command.kind === 'queue');
       case 'sessions':
         await handleSessionsCommand(command.page, {
           controller: () => this.#controller(),
@@ -425,7 +426,7 @@ export class StandaloneChat {
     return `**${markLabel(sessionLabel(binding.title))}>**\n\n${body}`;
   }
 
-  /** 发到指定会话；`/send` 的回答要回到发命令的那个聊天，不能跟着当前会话走。 */
+  /** 发到指定会话；`/send` 与 `/queue` 的回答要回到发命令的那个聊天，不能跟着当前会话走。 */
   async #deliverTo(chatId: string, text: string, replyTo?: string): Promise<boolean> {
     if (chatId === '') {
       this.#logger.warn?.('独立模式回复没有目标会话，已丢弃');
@@ -445,12 +446,12 @@ export class StandaloneChat {
     return true;
   }
 
-  /** 停机：收掉 `/send` 的等待定时器。 */
+  /** 停机：收掉投递的等待定时器。 */
   stop(): void {
     this.#watcher.stop();
   }
 
-  /** 等 `/send` 的推送与绑定写入落盘（测试与停机对齐用）。 */
+  /** 等投递的推送与绑定写入落盘（测试与停机对齐用）。 */
   async drain(): Promise<void> {
     await this.#watcher.drain();
     await this.#bindings.drain();

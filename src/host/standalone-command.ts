@@ -4,8 +4,8 @@
  * 纯函数、不碰会话状态，与 `standalone.ts` 的会话编排分开——命令表会随功能长，
  * 编排代码读起来才不用来回翻命令分支。
  *
- * `/send` 的参数按「第一个空白前是会话引用、后面全是内容」解析，内容里的换行与
- * 连续空格原样保留：发给目标会话的是主人写的那段话，不是压平后的一行。
+ * `/send` 与 `/queue` 的参数按「第一个空白前是会话引用、后面全是内容」解析，内容里的
+ * 换行与连续空格原样保留：发给目标会话的是主人写的那段话，不是压平后的一行。
  */
 
 export type StandaloneCommand =
@@ -17,6 +17,7 @@ export type StandaloneCommand =
   | { kind: 'stop' }
   | { kind: 'trace' }
   | { kind: 'send'; ref: string; text: string }
+  | { kind: 'queue'; ref: string; text: string }
   | { kind: 'unknown'; name: string };
 
 // 命令名后面必须是空白或结尾：`/sendabc` 不会被当成 `/send`，会落到未知命令。
@@ -44,7 +45,9 @@ export function parseCommand(input: string): StandaloneCommand | null {
     case 'trace':
       return { kind: 'trace' };
     case 'send':
-      return parseSend(rest);
+      return parseDelivery('send', rest);
+    case 'queue':
+      return parseDelivery('queue', rest);
     case 'sessions':
       return parseSessions(rest);
     case 'switch':
@@ -54,11 +57,11 @@ export function parseCommand(input: string): StandaloneCommand | null {
   }
 }
 
-function parseSend(rest: string): StandaloneCommand {
-  if (rest === '') return { kind: 'send', ref: '', text: '' };
+function parseDelivery(kind: 'send' | 'queue', rest: string): StandaloneCommand {
+  if (rest === '') return { kind, ref: '', text: '' };
   const space = rest.search(/\s/);
-  if (space < 0) return { kind: 'send', ref: rest, text: '' };
-  return { kind: 'send', ref: rest.slice(0, space), text: rest.slice(space + 1).trim() };
+  if (space < 0) return { kind, ref: rest, text: '' };
+  return { kind, ref: rest.slice(0, space), text: rest.slice(space + 1).trim() };
 }
 
 function parseSessions(rest: string): StandaloneCommand {
@@ -78,7 +81,8 @@ export const HELP_TEXT = [
   '`/new` 开新会话',
   '`/sessions [页码]` 列出最近会话与序号（不含前台会话）',
   '`/switch <序号、0、front 或会话 id>` 切换当前会话；`0` 与 `front` 回到前台会话',
-  '`/send <序号、0 或会话 id> <内容>` 发到指定会话，那一轮的回答回到这里',
+  '`/send <序号、0 或会话 id> <内容>` 发到指定会话；目标回合正在跑时按「回合内插话」设置处理',
+  '`/queue <序号、0 或会话 id> <内容>` 与 `/send` 相同，但始终排队到目标当前回合之后',
   '`/status` 当前会话与连接状态',
   '`/stop` 中止正在跑的回合',
   '`/trace` 上一条回答的模型与耗时',

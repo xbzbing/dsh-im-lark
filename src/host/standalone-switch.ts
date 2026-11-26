@@ -81,7 +81,7 @@ export async function handleSwitchCommand(ref: string, host: SwitchCommandHost):
   }
 
   if (host.watcher.has(picked.sessionId)) {
-    await host.reply(`「${sessionLabel(picked.title)}」还有一条 /send 在等回答，等它回来再切换。`);
+    await host.reply(`「${sessionLabel(picked.title)}」还有一条投递在等回答，等它回来再切换。`);
     return;
   }
 
@@ -156,7 +156,7 @@ async function switchToFront(
   }
 
   if (host.watcher.has(front.sessionId)) {
-    await host.reply(`「${sessionLabel(front.title)}」还有一条 /send 在等回答，等它回来再切换。`);
+    await host.reply(`「${sessionLabel(front.title)}」还有一条投递在等回答，等它回来再切换。`);
     return;
   }
 

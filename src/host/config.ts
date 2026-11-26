@@ -19,10 +19,10 @@ import { resolveDataDir } from './state/paths.ts';
 import type { LarkDomain } from './lark/types.ts';
 import { DEFAULT_LONG_TASK_MINUTES, normalizeLongTaskMinutes } from './long-tasks.ts';
 
-/** 独立模式里回合正在跑时又来一条消息的提交方式：插话（steer）或排队（queue）。 */
+/** 独立模式里发往目标会话的消息，在目标回合正在跑时的提交方式：插话（steer）或排队（queue）。 */
 export type BusyMode = 'queue' | 'steer';
 
-/** 默认插话：主人发消息通常是想马上纠正方向，排队会让这条消息过时。 */
+/** 默认插话：主人发消息通常是想马上纠正方向，排队会让这条消息过时；`/queue` 不受此设置影响。 */
 export const DEFAULT_DIRECT_BUSY_MODE: BusyMode = 'steer';
 
 /** 问题与审批提醒：默认开。 */

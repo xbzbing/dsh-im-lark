@@ -1,5 +1,5 @@
 /**
- * `/send` 的编排：定位会话、分流当前会话、提交并登记回答观察。
+ * `/send` 与 `/queue` 的编排：定位会话、分流当前会话、提交并登记回答观察。
  *
  * 与 `standalone.ts` 分开，避免会话编排被命令细节撑大；这里只通过端口拿状态与
  * 发消息，不自己持有任何字段。
@@ -11,6 +11,7 @@ import type { LarkLogger } from './lark/connection.ts';
 import { buildContent } from './prompt-content.ts';
 import type { OwnerMessageDraft } from './protocol.ts';
 import {
+  QUEUE_USAGE,
   SEND_USAGE,
   frontMissingHint,
   isFrontRef,
@@ -19,7 +20,7 @@ import {
   sessionLabel,
 } from './session-list.ts';
 import type { SendWatcher } from './session-watch.ts';
-import type { StandaloneController } from './standalone-types.ts';
+import type { BusyMode, StandaloneController } from './standalone-types.ts';
 import { frontSessionOf } from './state/direct.ts';
 import type { DirectBindingStore } from './state/direct.ts';
 import type { ListingStore } from './state/listing.ts';
@@ -33,15 +34,17 @@ export interface SendCommandHost {
   chatId: string;
   submitTimeoutMs: number;
   logger: LarkLogger;
-  /** 当前会话的普通提交；返回失败原因，成功为 null。 */
-  submitCurrent: (text: string, draft: OwnerMessageDraft) => Promise<string | null>;
+  /** 当前会话的提交；`mode` 由调用方决定是否强制排队。返回失败原因，成功为 null。 */
+  submitCurrent: (text: string, draft: OwnerMessageDraft, mode: BusyMode) => Promise<string | null>;
   /** 当前会话的完成对齐（`DoneAlign`）。 */
-  pushAlign: (platformMessageId: string) => void;
+  pushAlign: (platformMessageId: string, mode: BusyMode) => void;
+  /** 面板的「回合内插话」设置；`/queue` 会绕过它。 */
+  busyMode: () => BusyMode;
   reply: (text: string) => Promise<boolean>;
 }
 
 /**
- * 执行 `/send`；返回 `true` 表示还有一轮回答在路上（先别给命令消息补 `DONE`）。
+ * 执行 `/send` 或 `/queue`；返回 `true` 表示还有一轮回答在路上（先别给命令消息补 `DONE`）。
  *
  * 目标是当前会话时走普通提交，回答由绑定会话的回合逻辑发回；目标是其它会话时
  * 登记观察者，等它 `turn/end` 再发回来。两条路都不切换绑定。
@@ -51,12 +54,15 @@ export async function handleSendCommand(
   messageId: string,
   draft: OwnerMessageDraft,
   host: SendCommandHost,
+  forceQueue = false,
 ): Promise<boolean> {
   const images = draft.images ?? [];
   if (command.ref === '' || (command.text === '' && images.length === 0)) {
-    await host.reply(SEND_USAGE);
+    await host.reply(forceQueue ? QUEUE_USAGE : SEND_USAGE);
     return false;
   }
+  // `/queue` 固定排队；`/send` 与普通消息一样遵循面板设置。
+  const mode: BusyMode = forceQueue ? 'queue' : host.busyMode();
 
   const controller = host.controller();
   if (controller === null) {
@@ -98,28 +104,30 @@ export async function handleSendCommand(
   }
 
   if (binding !== null && binding.sessionId === picked.sessionId) {
-    const error = await host.submitCurrent(command.text, draft);
+    const error = await host.submitCurrent(command.text, draft, mode);
     if (error !== null) {
       await host.reply(error);
       return false;
     }
-    host.pushAlign(messageId);
+    host.pushAlign(messageId, mode);
     await host.reply(`已交给当前会话「${picked.title || '未命名会话'}」，回答照常发回这里。`);
     return true;
   }
 
-  // 列表里刚读到过它：运行中就走排队，先到的 turn/end 属于上一轮。
-  const busy = catalog.sessions.find((row) => row.sessionId === picked.sessionId)?.running === true;
+  // 列表里刚读到过它。只有排队且目标正在跑时，先到的 turn/end 才属于上一轮；
+  // 插话会进入当前回合，这个 turn/end 就是它的回答。
+  const running = catalog.sessions.find((row) => row.sessionId === picked.sessionId)?.running === true;
+  const queued = running && mode === 'queue';
   const tracked = host.watcher.track(
     picked.sessionId,
     picked.title,
     { chatId: host.chatId, replyTo: messageId, platformMessageId: messageId },
-    busy,
+    queued,
   );
   if (tracked !== 'ok') {
     await host.reply(
       tracked === 'busy'
-        ? `已经有一个 /send 在等「${picked.title || '未命名会话'}」的回答，等它回来再发。`
+        ? `已经有一条投递在等「${picked.title || '未命名会话'}」的回答，等它回来再发。`
         : '同时等待的会话太多，等几条回答回来再发。',
     );
     return false;
@@ -131,7 +139,7 @@ export async function handleSendCommand(
       {
         requestId: randomUUID(),
         sessionId: picked.sessionId,
-        mode: 'queue',
+        mode,
         content,
         clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       },
@@ -141,14 +149,18 @@ export async function handleSendCommand(
   } catch (error) {
     host.watcher.remove(picked.sessionId);
     const detail = error instanceof Error ? error.message : String(error);
-    host.logger.warn?.('独立模式 /send 提交失败', detail);
+    host.logger.warn?.('独立模式投递提交失败', detail);
     await host.reply(`没能把消息交给会话：${detail}`);
     return false;
   }
 
-  const queued = busy ? '，它正在运行，排在当前这一轮之后' : '';
+  const waitNote = running
+    ? mode === 'queue'
+      ? '，它正在运行，排在当前这一轮之后'
+      : '，它正在运行，这条会插进当前回合'
+    : '';
   const dropped = (draft.files?.length ?? 0) > 0 ? '；文件没有转发' : '';
-  await host.reply(`已交给会话「${picked.title || '未命名会话'}」${queued}${dropped}，这一轮结束后把回答发给你。`);
+  await host.reply(`已交给会话「${picked.title || '未命名会话'}」${waitNote}${dropped}，这一轮结束后把回答发给你。`);
   return true;
 }
 

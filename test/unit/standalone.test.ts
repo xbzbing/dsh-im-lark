@@ -156,6 +156,8 @@ test('命令解析：认清单里的命令，未知命令单独标出', () => {
   assert.deepEqual(parseCommand('/send 2 第一行\n第二行'), { kind: 'send', ref: '2', text: '第一行\n第二行' });
   assert.deepEqual(parseCommand('/send'), { kind: 'send', ref: '', text: '' });
   assert.deepEqual(parseCommand('/send 2'), { kind: 'send', ref: '2', text: '' });
+  assert.deepEqual(parseCommand('/queue 2 你好 世界'), { kind: 'queue', ref: '2', text: '你好 世界' });
+  assert.deepEqual(parseCommand('/queue'), { kind: 'queue', ref: '', text: '' });
   assert.deepEqual(parseCommand('/sessions'), { kind: 'sessions' });
   assert.deepEqual(parseCommand('/sessions 3'), { kind: 'sessions', page: 3 });
   assert.deepEqual(parseCommand('/sessions abc'), { kind: 'sessions' });
@@ -236,6 +238,7 @@ test('独立模式：/help 直接回文案，不进会话', async () => {
 
     assert.equal(prompts.length, 0);
     assert.match(deliveries[0]!.text, /\/new/);
+    assert.match(deliveries[0]!.text, /\/queue/);
     assert.equal(deliveries[0]!.replyTo, message.messageId);
   });
 });
@@ -439,7 +442,7 @@ test('独立模式：/switch 的前缀跨重启保留，/new 后消失', async (
   });
 });
 
-test('独立模式：/switch 拒绝还有 /send 在等回答的会话', async () => {
+test('独立模式：/switch 拒绝还有投递在等回答的会话', async () => {
   await withTempDir(async (dir) => {
     const { chat, deliveries, bindings } = await harness(dir.path, { listRows: rowsOf() });
     const hello = inbound();
@@ -452,7 +455,7 @@ test('独立模式：/switch 拒绝还有 /send 在等回答的会话', async ()
     const sw = inbound();
     await chat.handleInbound(sw, draftOf(sw, '/switch 1'));
 
-    assert.match(deliveries.at(-1)!.text, /还有一条 \/send 在等回答/);
+    assert.match(deliveries.at(-1)!.text, /还有一条投递在等回答/);
     assert.equal((await bindings.get())?.sessionId, 's_1');
   });
 });

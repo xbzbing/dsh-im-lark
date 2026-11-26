@@ -18,7 +18,8 @@ const TITLE_MAX = 32;
 const ID_SHOWN = 8;
 const SESSION_PREFIX = 'session-';
 
-export const SEND_USAGE = '用法：`/send <序号、0 或会话 id> <内容>`。先发 `/sessions` 看序号（`0` 是前台会话）。';
+export const SEND_USAGE = '用法：`/send <序号、0 或会话 id> <内容>`。先发 `/sessions` 看序号（`0` 是前台会话）；回合正在跑时按「回合内插话」设置决定插话或排队。';
+export const QUEUE_USAGE = '用法：`/queue <序号、0 或会话 id> <内容>`。与 `/send` 相同，但始终排队到目标当前回合之后。';
 export const SWITCH_USAGE = '用法：`/switch <序号、0、front 或会话 id>`；`0` 与 `front` 回到前台会话。';
 
 /** 没有前台会话时的提示：有绑定说明是旧记录丢了，不能再让人发消息等新建。 */
@@ -142,7 +143,7 @@ export function renderSessionList(view: SessionListView): string {
   if (view.truncated === true) lines.push('只列最近 100 个会话，更多请到 DSH 网页端查看。', '');
   if (view.page < view.pages) lines.push(`发 \`/sessions ${view.page + 1}\` 看下一页。`, '');
   const frontTip = view.hasFront === true ? '`/switch 0` 回到前台会话，`/send 0` 发到前台；' : '';
-  lines.push(`发 \`/switch <序号>\` 切换会话，${frontTip}\`/send <序号>\` 发到某个会话，那一轮的回答回到这里。序号在下次发 \`/sessions\` 之前不变。`);
+  lines.push(`发 \`/switch <序号>\` 切换会话，${frontTip}\`/send <序号>\` 发到某个会话（\`/queue\` 始终排队），那一轮的回答回到这里。序号在下次发 \`/sessions\` 之前不变。`);
   return lines.join('\n');
 }
 

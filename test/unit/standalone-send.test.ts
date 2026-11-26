@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { defaultSettings, normalizePluginConfig } from '../../src/host/config.ts';
+import type { LocalSettings } from '../../src/host/config.ts';
 import type { LarkInboundMessage } from '../../src/host/lark/types.ts';
 import type { OutboundChannel, OutboundInput } from '../../src/host/outbound.ts';
 import type { OwnerMessageDraft } from '../../src/host/protocol.ts';
@@ -27,6 +28,7 @@ async function harness(
     rows?: Array<Record<string, unknown>>;
     sendTimeoutMs?: number;
     listing?: ListingStore;
+    settings?: Partial<LocalSettings>;
   } = {},
 ): Promise<SendHarness> {
   const deliveries: OutboundInput[] = [];
@@ -69,7 +71,7 @@ async function harness(
     bindings,
     owners,
     listing,
-    settings: () => defaultSettings(normalizePluginConfig({})),
+    settings: () => ({ ...defaultSettings(normalizePluginConfig({})), ...options.settings }),
     controller: () => controller,
     ownerLabel: () => 'abcdef',
     now: () => 1_000,
@@ -133,7 +135,7 @@ test('/send 按序号发到目标会话，回答回到发命令的聊天', async
     const send = inbound();
     await h.chat.handleInbound(send, draftOf(send, '/send 1 帮我看看'));
     assert.equal(h.prompts.at(-1)!.sessionId, 's_2');
-    assert.equal(h.prompts.at(-1)!.mode, 'queue');
+    assert.equal(h.prompts.at(-1)!.mode, 'steer', '默认设置是插话，/send 也遵循');
     assert.match(h.deliveries.at(-1)!.text, /已交给会话「乙」/);
     assert.equal((await h.bindings.get())?.sessionId, 's_1', '不切换绑定');
     assert.ok(!h.marked.includes(send.messageId), '回答没回来之前不打 DONE');
@@ -159,6 +161,7 @@ test('/send 到当前会话走普通提交，回答只发一次', async () => {
     const send = inbound();
     await h.chat.handleInbound(send, draftOf(send, '/send 0 继续'));
     assert.equal(h.prompts.at(-1)!.sessionId, 's_1');
+    assert.equal(h.prompts.at(-1)!.mode, 'steer', '当前会话同样遵循默认插话设置');
     assert.match(h.deliveries.at(-1)!.text, /当前会话/);
 
     h.chat.handleEvent('s_1', { type: 'turn/start', data: {} });
@@ -214,7 +217,7 @@ test('/send 的序号不在快照里时提示先列会话', async () => {
   });
 });
 
-test('/send 排队时跳过目标会话上一轮的 turn/end', async () => {
+test('/queue 排队时跳过目标会话上一轮的 turn/end', async () => {
   await withTempDir(async (dir) => {
     const h = await harness(dir.path, {
       rows: [
@@ -225,7 +228,8 @@ test('/send 排队时跳过目标会话上一轮的 turn/end', async () => {
     await bindAndList(h);
 
     const send = inbound();
-    await h.chat.handleInbound(send, draftOf(send, '/send 1 排队'));
+    await h.chat.handleInbound(send, draftOf(send, '/queue 1 排队'));
+    assert.equal(h.prompts.at(-1)!.mode, 'queue');
     assert.match(h.deliveries.at(-1)!.text, /正在运行/);
 
     // 先到的是上一轮的收尾，不能当成这一轮的回答。
@@ -241,6 +245,71 @@ test('/send 排队时跳过目标会话上一轮的 turn/end', async () => {
     const answers = h.deliveries.filter((item) => item.text.includes('来自会话'));
     assert.equal(answers.length, 1);
     assert.match(answers[0]!.text, /答/);
+  });
+});
+
+test('/send 在排队设置下跨会话也用 queue', async () => {
+  await withTempDir(async (dir) => {
+    const h = await harness(dir.path, { rows: ROWS, settings: { directBusyMode: 'queue' } });
+    await bindAndList(h);
+
+    const send = inbound();
+    await h.chat.handleInbound(send, draftOf(send, '/send 1 排队'));
+    assert.equal(h.prompts.at(-1)!.sessionId, 's_2');
+    assert.equal(h.prompts.at(-1)!.mode, 'queue', '跨会话 /send 也遵循排队设置');
+  });
+});
+
+test('/send 在插话设置下插进目标正在跑的回合', async () => {
+  await withTempDir(async (dir) => {
+    const h = await harness(dir.path, {
+      rows: [
+        { sessionId: 's_1', projections: { values: { title: '甲' } } },
+        { sessionId: 's_2', projections: { values: { title: '乙' } }, running: true },
+      ],
+    });
+    await bindAndList(h);
+
+    const send = inbound();
+    await h.chat.handleInbound(send, draftOf(send, '/send 1 插话'));
+    assert.equal(h.prompts.at(-1)!.mode, 'steer');
+    assert.match(h.deliveries.at(-1)!.text, /插进当前回合/);
+
+    // 插话进入的是当前回合，这个 turn/end 就是它的回答，不能跳过。
+    h.chat.handleEvent('s_2', {
+      type: 'assistant/message',
+      data: { message: { content: [{ type: 'text', text: '插话答' }] } },
+    });
+    h.chat.handleEvent('s_2', { type: 'turn/end', data: {} });
+    await h.chat.drain();
+
+    assert.match(h.deliveries.at(-1)!.text, /插话答/);
+    assert.ok(h.marked.includes(send.messageId));
+  });
+});
+
+test('/queue 到当前会话固定排队，不受插话设置影响', async () => {
+  await withTempDir(async (dir) => {
+    const h = await harness(dir.path, { rows: ROWS });
+    await bindAndList(h);
+
+    const queued = inbound();
+    await h.chat.handleInbound(queued, draftOf(queued, '/queue 0 排队'));
+    assert.equal(h.prompts.at(-1)!.sessionId, 's_1');
+    assert.equal(h.prompts.at(-1)!.mode, 'queue', '默认插话也不能影响 /queue');
+    assert.match(h.deliveries.at(-1)!.text, /当前会话/);
+  });
+});
+
+test('/queue 缺参数时给专用用法', async () => {
+  await withTempDir(async (dir) => {
+    const h = await harness(dir.path, { rows: ROWS });
+    await bindAndList(h);
+
+    const queued = inbound();
+    await h.chat.handleInbound(queued, draftOf(queued, '/queue'));
+    assert.match(h.deliveries.at(-1)!.text, /始终排队/);
+    assert.equal(h.prompts.length, 1, '只有建会话那条');
   });
 });
 

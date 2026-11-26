@@ -1,11 +1,11 @@
 /**
- * `/send` 的回答观察者：盯住目标会话的这一轮，结束后把回答发回飞书。
+ * `/send` 与 `/queue` 的回答观察者：盯住目标会话的这一轮，结束后把回答发回飞书。
  *
  * 事件来自宿主的 `session/event`（一个监听器覆盖所有会话，不为每个会话单独订阅）。
  * 回调里只做状态折叠（同步、不抛），发送放进按会话串行的队列：同一会话先结束的
  * 回合先发，不乱序。
  *
- * 目标会话正在跑时用排队提交：先到的 `turn/end` 属于上一轮，不能当成这一轮的回答。
+ * 排队且目标会话正在跑时，先到的 `turn/end` 属于上一轮，不能当成这一轮的回答。
  */
 
 import { asRecord, textFromAssistantMessage } from './session-text.ts';
@@ -17,7 +17,7 @@ const UNTITLED = '未命名会话';
 export interface SendWatchTarget {
   chatId: string;
   replyTo?: string;
-  /** 触发 `/send` 的平台消息 id：回答送达后才补 `DONE`。 */
+  /** 触发投递的平台消息 id：回答送达后才补 `DONE`。 */
   platformMessageId: string;
 }
 
@@ -87,7 +87,7 @@ export class SendWatcher {
     this.#clearTimer = options.clearTimer ?? defaultClearTimer;
   }
 
-  /** 受理一次 `/send`：`queued` 表示目标会话正在跑、这一条排在后面。 */
+  /** 受理一次投递：`queued` 表示目标会话正在跑、这一条排在后面。 */
   track(sessionId: string, title: string, target: SendWatchTarget, queued = false): 'ok' | 'busy' | 'full' {
     if (this.#watches.has(sessionId)) return 'busy';
     if (this.#watches.size >= this.#maxPending) return 'full';
@@ -98,7 +98,7 @@ export class SendWatcher {
     return 'ok';
   }
 
-  /** 这个会话是否还有 `/send` 在等回答（切换前要拦）。 */
+  /** 这个会话是否还有投递在等回答（切换前要拦）。 */
   has(sessionId: string): boolean {
     return this.#watches.has(sessionId);
   }
@@ -117,7 +117,7 @@ export class SendWatcher {
     try {
       this.#apply(sessionId, asRecord(event));
     } catch (error) {
-      this.#logger?.warn?.('独立模式 /send 事件处理失败', error instanceof Error ? error.message : String(error));
+      this.#logger?.warn?.('独立模式投递事件处理失败', error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -186,7 +186,7 @@ export class SendWatcher {
       else if (answer === '') text = `「${title}」这一轮结束了，没有可发送的文本。`;
       else text = `来自会话「${title}」：\n\n${answer}`;
       const sent = await this.#deliver(watch.target, text).catch((error: unknown) => {
-        this.#logger?.warn?.('独立模式 /send 推送失败', error instanceof Error ? error.message : String(error));
+        this.#logger?.warn?.('独立模式投递推送失败', error instanceof Error ? error.message : String(error));
         return false;
       });
       // 只有正常收尾且真的发出了回答才补 DONE；失败/中止/无文本都不给假信号。
@@ -203,7 +203,7 @@ export class SendWatcher {
     this.#enqueue(sessionId, async () => {
       await this.#deliver(watch.target, `「${watch.title || UNTITLED}」这一轮没有在 ${minutes} 分钟内结束，不再等它了。`).catch(
         (error: unknown) => {
-          this.#logger?.warn?.('独立模式 /send 超时提示发送失败', error instanceof Error ? error.message : String(error));
+          this.#logger?.warn?.('独立模式投递超时提示发送失败', error instanceof Error ? error.message : String(error));
           return false;
         },
       );
@@ -214,7 +214,7 @@ export class SendWatcher {
   #enqueue(sessionId: string, task: () => Promise<void>): void {
     const previous = this.#queues.get(sessionId) ?? Promise.resolve();
     const next = previous.then(task).catch((error: unknown) => {
-      this.#logger?.warn?.('独立模式 /send 推送失败', error instanceof Error ? error.message : String(error));
+      this.#logger?.warn?.('独立模式投递推送失败', error instanceof Error ? error.message : String(error));
     });
     this.#queues.set(sessionId, next);
     void next.finally(() => {

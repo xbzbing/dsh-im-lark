@@ -92,7 +92,7 @@ export interface PanelSnapshot {
     superagent: boolean;
     typingIndicator: boolean;
     replyStatus: boolean;
-    /** 独立模式：回合进行中收到新消息时插话（true）还是排队（false）。 */
+    /** 独立模式：发往目标会话的消息在回合进行中插话（true）还是排队（false）；`/queue` 固定排队。 */
     directBusyMode: 'queue' | 'steer';
     /** 独立模式选定的工作区；空串表示插件自动创建的默认工作区。 */
     directWorkspaceId: string;
