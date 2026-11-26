@@ -198,6 +198,8 @@ export function createLarkStack(options: LarkStackOptions): LarkStack {
     dispose: () => {
       standalone.stop();
       bridge.dispose();
+      // 标题事件是 fire-and-forget；停机时把绑定写入也排空，别丢掉最后一笔。
+      void standalone.drain();
       void pipeline.drain();
     },
   };

@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
-import { stat } from 'node:fs/promises';
+import { mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import { test } from 'node:test';
 
-import { DirectBindingStore, OwnerStore } from '../../src/host/state/direct.ts';
+import { DirectBindingStore, OwnerStore, frontSessionOf } from '../../src/host/state/direct.ts';
 import { withTempDir } from './helpers/temp.ts';
 
 test('绑定：写盘后新实例能读回，文件权限 0600', async () => {
@@ -128,5 +128,83 @@ test('主人：清除后可以重新认领（换机器/重装场景）', async (
     await owners.claim('ou_a', 'oc_1');
     await owners.clear();
     assert.deepEqual(await owners.claim('ou_b', 'oc_2'), { openId: 'ou_b', chatId: 'oc_2' });
+  });
+});
+
+test('前台：空绑定、旧版未切换、切走有/无记录', () => {
+  assert.equal(frontSessionOf(null), null);
+  assert.deepEqual(frontSessionOf({ sessionId: 's_1', workspaceId: '', title: '甲' }), {
+    sessionId: 's_1',
+    title: '甲',
+  });
+  assert.equal(frontSessionOf({ sessionId: 's_2', workspaceId: '', switched: true }), null);
+  assert.deepEqual(
+    frontSessionOf({ sessionId: 's_2', workspaceId: '', switched: true, frontSessionId: 's_1', frontTitle: '甲' }),
+    { sessionId: 's_1', title: '甲' },
+  );
+});
+
+test('绑定：写入队列让标题与绑定变更按提交顺序合并', async () => {
+  await withTempDir(async (dir) => {
+    const store = new DirectBindingStore({ dataDir: dir.path });
+    await store.set({ sessionId: 's_2', workspaceId: '', title: '乙', switched: true, frontSessionId: 's_1', frontTitle: '甲' });
+
+    const title = store.setTitle('新甲', 's_1');
+    const switched = store.update((current) => {
+      if (current === null) return undefined;
+      return { ...current, sessionId: 's_3', workspaceId: '', title: '丙' };
+    });
+    await Promise.all([title, switched]);
+
+    const binding = await store.get();
+    assert.equal(binding?.sessionId, 's_3');
+    assert.equal(binding?.frontSessionId, 's_1');
+    assert.equal(binding?.frontTitle, '新甲');
+  });
+});
+
+test('绑定：drain 等到排队写入落盘', async () => {
+  await withTempDir(async (dir) => {
+    const store = new DirectBindingStore({ dataDir: dir.path });
+    const writing = store.set({ sessionId: 's_1', workspaceId: '', title: '甲' });
+    await store.drain();
+    await writing;
+
+    const reopened = new DirectBindingStore({ dataDir: dir.path });
+    assert.equal((await reopened.get())?.sessionId, 's_1');
+  });
+});
+
+test('绑定：前台标题跨重启保留', async () => {
+  await withTempDir(async (dir) => {
+    const store = new DirectBindingStore({ dataDir: dir.path });
+    await store.set({ sessionId: 's_2', workspaceId: '', title: '乙', switched: true, frontSessionId: 's_1', frontTitle: '新甲' });
+    await store.drain();
+
+    const reopened = new DirectBindingStore({ dataDir: dir.path });
+    assert.equal((await reopened.get())?.frontTitle, '新甲');
+  });
+});
+
+test('绑定：一次写失败后队列仍能继续', async () => {
+  await withTempDir(async (dir) => {
+    const state = dir.at('state');
+    await writeFile(state, 'not a directory', 'utf8');
+    const store = new DirectBindingStore({ dataDir: state });
+    await assert.rejects(store.set({ sessionId: 's_1', workspaceId: '' }));
+
+    await rm(state, { force: true });
+    await mkdir(state, { recursive: true });
+    await store.set({ sessionId: 's_1', workspaceId: '', title: '甲' });
+    assert.equal((await store.get())?.title, '甲');
+  });
+});
+
+test('绑定：并发 get 只读一份', async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(dir.at('direct.json'), JSON.stringify({ sessionId: 's_1', workspaceId: '' }), 'utf8');
+    const store = new DirectBindingStore({ dataDir: dir.path });
+    const [first, second] = await Promise.all([store.get(), store.get()]);
+    assert.equal(first, second);
   });
 });

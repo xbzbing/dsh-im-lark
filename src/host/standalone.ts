@@ -13,10 +13,11 @@ import { randomUUID } from 'node:crypto';
 
 import { DoneAlign } from './done-align.ts';
 import { buildContent } from './prompt-content.ts';
-import { SESSION_PAGE_SIZE, loadSessionCatalog, markLabel, renderSessionList, sessionLabel } from './session-list.ts';
+import { markLabel, sessionLabel } from './session-list.ts';
 import { SendWatcher } from './session-watch.ts';
 import { asRecord, textFromAssistantMessage } from './session-text.ts';
 import { handleSendCommand } from './standalone-send.ts';
+import { handleSessionsCommand } from './standalone-sessions.ts';
 import { handleSwitchCommand } from './standalone-switch.ts';
 import type { StandaloneCommand } from './standalone-command.ts';
 import { HELP_TEXT, parseCommand } from './standalone-command.ts';
@@ -26,9 +27,7 @@ import type { LarkInboundMessage } from './lark/types.ts';
 import type { OutboundChannel } from './outbound.ts';
 import type { OwnerMessageDraft } from './protocol.ts';
 import type { LocalSettings } from './config.ts';
-import { frontSessionOf } from './state/direct.ts';
 import type { DirectBindingStore, OwnerStore } from './state/direct.ts';
-import { MAX_LISTING } from './state/listing.ts';
 import type { ListingStore } from './state/listing.ts';
 
 export type { BusyMode, PromptPart, StandaloneController } from './standalone-types.ts';
@@ -180,15 +179,18 @@ export class StandaloneChat {
     const entry = asRecord(event);
     if (entry === null) return;
 
+    const binding = this.#bindings.peek();
+
     // 标题事件连前台会话一起跟：切走之后前台改名，回来时前缀才是新的。
+    // 绑定已加载时先同步过滤，避免无关会话的标题事件也排进写队列。
     if (entry.type === 'session/title') {
       const title = asRecord(entry.data)?.title;
       if (typeof title !== 'string' || title.trim() === '') return;
+      if (binding !== null && binding.sessionId !== sessionId && binding.frontSessionId !== sessionId) return;
       void this.#bindings.setTitle(title.trim(), sessionId).catch(() => undefined);
       return;
     }
 
-    const binding = this.#bindings.peek();
     if (binding === null || binding.sessionId !== sessionId) return;
 
     switch (entry.type) {
@@ -361,7 +363,12 @@ export class StandaloneChat {
           reply: (text) => this.#reply(text),
         });
       case 'sessions':
-        await this.#showSessions(command.page);
+        await handleSessionsCommand(command.page, {
+          controller: () => this.#controller(),
+          listing: this.#listing,
+          bindings: this.#bindings,
+          reply: (text) => this.#reply(text),
+        });
         return false;
       case 'switch':
         await handleSwitchCommand(command.ref, {
@@ -381,42 +388,6 @@ export class StandaloneChat {
         await this.#reply(`不认识的命令：/${command.name}\n\n${HELP_TEXT}`);
         return false;
     }
-  }
-
-  /** `/sessions [页码]`：列一份新快照，序号在下次发 `/sessions` 之前不变。 */
-  async #showSessions(page: number | undefined): Promise<void> {
-    const binding = await this.#bindings.get();
-    const front = frontSessionOf(binding);
-    const catalog = await loadSessionCatalog(
-      this.#controller(),
-      binding === null ? {} : { keepId: binding.sessionId },
-    );
-    if (!catalog.available) {
-      await this.#reply(catalog.reason ?? '读取会话列表失败。');
-      return;
-    }
-
-    // 前台会话不参与编号：它固定是 0，列出来只会让序号和切换目标对不上。
-    const others = catalog.sessions.filter((row) => row.sessionId !== front?.sessionId);
-    const visible = others.slice(0, MAX_LISTING);
-    await this.#listing.set(visible);
-    if (visible.length === 0) {
-      await this.#reply('没有其它会话。');
-      return;
-    }
-
-    const pages = Math.max(1, Math.ceil(visible.length / SESSION_PAGE_SIZE));
-    const shown = Math.min(Math.max(1, page ?? 1), pages);
-    const offset = (shown - 1) * SESSION_PAGE_SIZE;
-    await this.#reply(renderSessionList({
-      rows: visible.slice(offset, offset + SESSION_PAGE_SIZE),
-      page: shown,
-      pages,
-      offset,
-      total: visible.length,
-      ...(binding === null ? {} : { currentId: binding.sessionId }),
-      ...(others.length > visible.length ? { truncated: true } : {}),
-    }));
   }
 
   #statusText(): string {

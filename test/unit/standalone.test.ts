@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { writeFile } from 'node:fs/promises';
 import { test } from 'node:test';
 
 import { defaultSettings, normalizePluginConfig } from '../../src/host/config.ts';
@@ -42,6 +43,8 @@ async function harness(
     deliverError?: string;
     /** 复用已有的序号快照（模拟插件重启）。 */
     listing?: ListingStore;
+    /** 复用/替换绑定存储（测试计数用）。 */
+    bindings?: DirectBindingStore;
     /** `/send` 等回答的上限与定时器（超时用例）。 */
     sendTimeoutMs?: number;
     setTimer?: (callback: () => void, ms: number) => unknown;
@@ -91,7 +94,7 @@ async function harness(
           ...options.controller,
         };
 
-  const bindings = new DirectBindingStore({ dataDir: dir });
+  const bindings = options.bindings ?? new DirectBindingStore({ dataDir: dir });
   const owners = new OwnerStore({ dataDir: dir });
   const listing = options.listing ?? new ListingStore({ dataDir: dir });
 
@@ -372,6 +375,7 @@ test('独立模式：/sessions 列出会话与序号，不切换绑定', async (
     assert.match(text, /1 \| 乙/);
     assert.doesNotMatch(text, /（当前）/);
     assert.match(text, /运行中/);
+    assert.match(text, /\/send 0/);
     assert.equal((await bindings.get())?.sessionId, 's_1');
 
     // 页码只翻页，不再换会话。
@@ -585,11 +589,12 @@ test('独立模式：/switch front 与 /switch 0 等价', async () => {
 
 test('独立模式：/new 后没有前台会话，/switch 0 明确提示', async () => {
   await withTempDir(async (dir) => {
-    const { chat, deliveries } = await harness(dir.path);
+    const { chat, deliveries, bindings } = await harness(dir.path);
     const hello = inbound();
     await chat.handleInbound(hello, draftOf(hello, '你好'));
     const reset = inbound();
     await chat.handleInbound(reset, draftOf(reset, '/new'));
+    assert.equal(await bindings.get(), null);
     const back = inbound();
     await chat.handleInbound(back, draftOf(back, '/switch 0'));
     assert.match(deliveries.at(-1)!.text, /还没有前台会话/);
@@ -829,5 +834,312 @@ test('独立模式：/new 清空待结算队列，被放弃的消息不会被下
 
     assert.deepEqual(marked, [command.messageId, fresh.messageId]);
     assert.ok(!marked.includes(stale.messageId), '被放弃的消息不能盖完成标记');
+  });
+});
+
+test('独立模式：旧版已切换但没前台记录时提示 /new，而不是让人发消息', async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(
+      dir.at('direct.json'),
+      JSON.stringify({ sessionId: 's_2', workspaceId: '', title: '乙', switched: true }),
+      'utf8',
+    );
+    const { chat, deliveries, prompts, created } = await harness(dir.path, { listRows: rowsOf() });
+
+    const back = inbound();
+    await chat.handleInbound(back, draftOf(back, '/switch 0'));
+    assert.match(deliveries.at(-1)!.text, /没有前台会话记录/);
+    assert.match(deliveries.at(-1)!.text, /\/new/);
+
+    const send = inbound();
+    await chat.handleInbound(send, draftOf(send, '/send 0 你好'));
+    assert.match(deliveries.at(-1)!.text, /没有前台会话记录/);
+
+    const message = inbound();
+    await chat.handleInbound(message, draftOf(message, '你好'));
+    assert.deepEqual(prompts.map((item) => item.sessionId), ['s_2']);
+    assert.deepEqual(created, []);
+  });
+});
+
+test('独立模式：当前就在前台但前台被删，/switch 0 与 /send 0 都提示 /new', async () => {
+  await withTempDir(async (dir) => {
+    const { chat, deliveries, prompts } = await harness(dir.path, { listRows: rowsOf().slice(1) });
+    const hello = inbound();
+    await chat.handleInbound(hello, draftOf(hello, '你好'));
+
+    const back = inbound();
+    await chat.handleInbound(back, draftOf(back, '/switch 0'));
+    assert.match(deliveries.at(-1)!.text, /不在了/);
+    assert.match(deliveries.at(-1)!.text, /\/new/);
+
+    const send = inbound();
+    await chat.handleInbound(send, draftOf(send, '/send 0 你好'));
+    assert.match(deliveries.at(-1)!.text, /不在了/);
+    assert.equal(prompts.length, 1);
+  });
+});
+
+test('独立模式：/switch 用前台 id 无需先 /sessions', async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(
+      dir.at('direct.json'),
+      JSON.stringify({
+        sessionId: 's_2',
+        workspaceId: '',
+        title: '乙',
+        switched: true,
+        frontSessionId: 's_1',
+        frontTitle: '甲',
+      }),
+      'utf8',
+    );
+    const { chat, bindings } = await harness(dir.path, { listRows: rowsOf() });
+
+    const sw = inbound();
+    await chat.handleInbound(sw, draftOf(sw, '/switch s_1'));
+    const binding = await bindings.get();
+    assert.equal(binding?.sessionId, 's_1');
+    assert.equal(binding?.switched, undefined);
+  });
+});
+
+test('独立模式：/switch 前台 id 被删时提示 /new', async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(
+      dir.at('direct.json'),
+      JSON.stringify({
+        sessionId: 's_2',
+        workspaceId: '',
+        title: '乙',
+        switched: true,
+        frontSessionId: 's_1',
+        frontTitle: '甲',
+      }),
+      'utf8',
+    );
+    const { chat, deliveries } = await harness(dir.path, { listRows: rowsOf().slice(1) });
+
+    const sw = inbound();
+    await chat.handleInbound(sw, draftOf(sw, '/switch s_1'));
+    assert.match(deliveries.at(-1)!.text, /不在了/);
+    assert.match(deliveries.at(-1)!.text, /\/new/);
+  });
+});
+
+test('独立模式：/send 用前台 id 发到前台', async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(
+      dir.at('direct.json'),
+      JSON.stringify({
+        sessionId: 's_2',
+        workspaceId: '',
+        title: '乙',
+        switched: true,
+        frontSessionId: 's_1',
+        frontTitle: '甲',
+      }),
+      'utf8',
+    );
+    const { chat, deliveries, prompts } = await harness(dir.path, { listRows: rowsOf() });
+
+    const send = inbound();
+    await chat.handleInbound(send, draftOf(send, '/send s_1 你好'));
+    assert.equal(prompts.at(-1)!.sessionId, 's_1');
+    assert.match(deliveries.at(-1)!.text, /已交给会话「甲」/);
+
+    chat.handleEvent('s_1', { type: 'turn/start', data: {} });
+    chat.handleEvent('s_1', {
+      type: 'assistant/message',
+      data: { message: { content: [{ type: 'text', text: '答' }] } },
+    });
+    chat.handleEvent('s_1', { type: 'turn/end', data: {} });
+    await chat.drain();
+  });
+});
+
+test('独立模式：已在前台时 /switch 0 不重复切换', async () => {
+  await withTempDir(async (dir) => {
+    const { chat, deliveries, bindings } = await harness(dir.path, { listRows: rowsOf() });
+    const hello = inbound();
+    await chat.handleInbound(hello, draftOf(hello, '你好'));
+
+    const back = inbound();
+    await chat.handleInbound(back, draftOf(back, '/switch 0'));
+    assert.match(deliveries.at(-1)!.text, /已经在前台会话/);
+    const binding = await bindings.get();
+    assert.equal(binding?.sessionId, 's_1');
+    assert.equal(binding?.switched, undefined);
+  });
+});
+
+test('独立模式：/switch 期间前台改名不被旧快照覆盖', async () => {
+  await withTempDir(async (dir) => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let started: () => void = () => undefined;
+    const listStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let gateNextList = false;
+    const { chat, bindings } = await harness(dir.path, {
+      listRows: rowsOf(),
+      controller: {
+        async list() {
+          if (gateNextList) {
+            gateNextList = false;
+            started();
+            await gate;
+          }
+          return { items: rowsOf() as never };
+        },
+      },
+    });
+
+    const hello = inbound();
+    await chat.handleInbound(hello, draftOf(hello, '你好'));
+    const list = inbound();
+    await chat.handleInbound(list, draftOf(list, '/sessions'));
+
+    const sw = inbound();
+    gateNextList = true;
+    const switching = chat.handleInbound(sw, draftOf(sw, '/switch 1'));
+    await listStarted;
+    chat.handleEvent('s_1', { type: 'session/title', data: { title: '新前台' } });
+    await chat.drain();
+    release();
+    await switching;
+
+    const binding = await bindings.get();
+    assert.equal(binding?.sessionId, 's_2');
+    assert.equal(binding?.frontTitle, '新前台');
+  });
+});
+
+test('独立模式：没有其它会话时提示 /switch 0 与 /send 0', async () => {
+  await withTempDir(async (dir) => {
+    const { chat, deliveries } = await harness(dir.path, { listRows: [] });
+    const hello = inbound();
+    await chat.handleInbound(hello, draftOf(hello, '你好'));
+
+    const list = inbound();
+    await chat.handleInbound(list, draftOf(list, '/sessions'));
+    assert.match(deliveries.at(-1)!.text, /没有其它会话/);
+    assert.match(deliveries.at(-1)!.text, /\/switch 0/);
+    assert.match(deliveries.at(-1)!.text, /\/send 0/);
+  });
+});
+
+test('独立模式：无关会话的标题事件不改绑定', async () => {
+  await withTempDir(async (dir) => {
+    const { chat, bindings } = await harness(dir.path);
+    const hello = inbound();
+    await chat.handleInbound(hello, draftOf(hello, '你好'));
+    const before = await bindings.get();
+
+    chat.handleEvent('s_9', { type: 'session/title', data: { title: '无关' } });
+    await chat.drain();
+    assert.deepEqual(await bindings.get(), before);
+  });
+});
+
+test('独立模式：/send 0 的前台删除提示会压平标题', async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(
+      dir.at('direct.json'),
+      JSON.stringify({
+        sessionId: 's_2',
+        workspaceId: '',
+        title: '乙',
+        switched: true,
+        frontSessionId: 's_1',
+        frontTitle: '旧\n前台',
+      }),
+      'utf8',
+    );
+    const { chat, deliveries } = await harness(dir.path, { listRows: rowsOf().slice(1) });
+
+    const send = inbound();
+    await chat.handleInbound(send, draftOf(send, '/send 0 你好'));
+    assert.match(deliveries.at(-1)!.text, /旧 前台/);
+    assert.doesNotMatch(deliveries.at(-1)!.text, /旧\n前台/);
+  });
+});
+
+test('独立模式：/sessions 没有会话时提示先建会话', async () => {
+  await withTempDir(async (dir) => {
+    const { chat, deliveries } = await harness(dir.path, { listRows: [] });
+    const list = inbound();
+    await chat.handleInbound(list, draftOf(list, '/sessions'));
+    assert.match(deliveries.at(-1)!.text, /还没有前台会话/);
+    assert.doesNotMatch(deliveries.at(-1)!.text, /\/switch 0/);
+  });
+});
+
+test('独立模式：/switch 前台短 id 被删时提示 /new', async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(
+      dir.at('direct.json'),
+      JSON.stringify({
+        sessionId: 's_2',
+        workspaceId: '',
+        title: '乙',
+        switched: true,
+        frontSessionId: 'session-abcdef1234',
+        frontTitle: '甲',
+      }),
+      'utf8',
+    );
+    const { chat, deliveries } = await harness(dir.path, { listRows: rowsOf().slice(1) });
+
+    const sw = inbound();
+    await chat.handleInbound(sw, draftOf(sw, '/switch abcdef12'));
+    assert.match(deliveries.at(-1)!.text, /不在了/);
+    assert.match(deliveries.at(-1)!.text, /\/new/);
+  });
+});
+
+test('独立模式：旧版无前台记录且没有其它会话时，/sessions 提示 /new', async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(
+      dir.at('direct.json'),
+      JSON.stringify({ sessionId: 's_2', workspaceId: '', title: '乙', switched: true }),
+      'utf8',
+    );
+    const { chat, deliveries } = await harness(dir.path, { listRows: [] });
+
+    const list = inbound();
+    await chat.handleInbound(list, draftOf(list, '/sessions'));
+    assert.match(deliveries.at(-1)!.text, /没有前台会话记录/);
+    assert.match(deliveries.at(-1)!.text, /\/new/);
+    assert.doesNotMatch(deliveries.at(-1)!.text, /\/switch 0/);
+  });
+});
+
+test('独立模式：无关会话的标题事件在入队前被丢弃', async () => {
+  class CountingBindings extends DirectBindingStore {
+    readonly titles: Array<string | undefined> = [];
+    override async setTitle(title: string, sessionId?: string): Promise<void> {
+      this.titles.push(sessionId);
+      await super.setTitle(title, sessionId);
+    }
+  }
+
+  await withTempDir(async (dir) => {
+    const bindings = new CountingBindings({ dataDir: dir.path });
+    const { chat } = await harness(dir.path, { bindings, listRows: rowsOf() });
+    const hello = inbound();
+    await chat.handleInbound(hello, draftOf(hello, '你好'));
+    bindings.titles.length = 0;
+
+    chat.handleEvent('s_9', { type: 'session/title', data: { title: '无关' } });
+    await chat.drain();
+    assert.deepEqual(bindings.titles, []);
+
+    chat.handleEvent('s_1', { type: 'session/title', data: { title: '前台新名' } });
+    await chat.drain();
+    assert.deepEqual(bindings.titles, ['s_1']);
   });
 });

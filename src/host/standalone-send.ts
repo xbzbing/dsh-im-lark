@@ -10,7 +10,14 @@ import { randomUUID } from 'node:crypto';
 import type { LarkLogger } from './lark/connection.ts';
 import { buildContent } from './prompt-content.ts';
 import type { OwnerMessageDraft } from './protocol.ts';
-import { SEND_USAGE, isFrontRef, loadSessionCatalog, resolveSessionRef } from './session-list.ts';
+import {
+  SEND_USAGE,
+  frontMissingHint,
+  isFrontRef,
+  loadSessionCatalog,
+  resolveSessionRef,
+  sessionLabel,
+} from './session-list.ts';
 import type { SendWatcher } from './session-watch.ts';
 import type { StandaloneController } from './standalone-types.ts';
 import { frontSessionOf } from './state/direct.ts';
@@ -61,7 +68,7 @@ export async function handleSendCommand(
   const front = frontSessionOf(binding);
   const wantFront = isFrontRef(command.ref);
   if (wantFront && front === null) {
-    await host.reply('还没有前台会话：先发一条消息建会话。');
+    await host.reply(frontMissingHint(binding !== null));
     return false;
   }
   const frontId = front?.sessionId ?? '';
@@ -76,7 +83,7 @@ export async function handleSendCommand(
     const live = catalog.sessions.find((row) => row.sessionId === frontId);
     if (catalog.available && live === undefined) {
       await host.reply(
-        `前台会话「${front?.title || '未命名会话'}」不在了；发 /new 开新会话，或 /switch <序号> 换到其它会话。`,
+        `前台会话「${sessionLabel(front?.title)}」不在了；发 /new 开新会话，或 /switch <序号> 换到其它会话。`,
       );
       return false;
     }

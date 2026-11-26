@@ -59,7 +59,9 @@ export class DirectBindingStore {
   readonly #path: string;
   readonly #logger: StateLogger;
   #binding: DirectBinding | null | undefined;
-  /** 串行落盘：标题事件与 `/switch` 可能同一毫秒触发，不能互相覆盖。 */
+  /** 首次读盘的 single-flight：并发 get 不会各读一份、互相覆盖。 */
+  #loading: Promise<DirectBinding | null> | null = null;
+  /** 串行读改写：标题事件与 `/switch` 交错时，后执行的变更总能读到前一次的结果。 */
   #queue: Promise<void> = Promise.resolve();
 
   constructor(options: { dataDir: string; logger?: StateLogger }) {
@@ -69,9 +71,16 @@ export class DirectBindingStore {
 
   async get(): Promise<DirectBinding | null> {
     if (this.#binding !== undefined) return this.#binding;
-    const raw = await readJsonIfPresent(this.#path, this.#logger);
-    this.#binding = normalizeBinding(raw);
-    return this.#binding;
+    if (this.#loading !== null) return this.#loading;
+    this.#loading = readJsonIfPresent(this.#path, this.#logger)
+      .then((raw) => {
+        this.#binding = normalizeBinding(raw);
+        return this.#binding;
+      })
+      .finally(() => {
+        this.#loading = null;
+      });
+    return this.#loading;
   }
 
   /** 同步视图（事件回调里不想 await）；未 load 前恒为 null。 */
@@ -80,15 +89,13 @@ export class DirectBindingStore {
   }
 
   async set(binding: DirectBinding): Promise<void> {
-    this.#binding = binding;
-    await this.#enqueueWrite();
+    await this.update(() => binding);
   }
 
   /** 更新标题；给了 `sessionId` 时只改仍指向它的当前绑定或前台会话。 */
   async setTitle(title: string, sessionId?: string): Promise<void> {
-    const run = this.#queue.then(async () => {
-      const current = await this.get();
-      if (current === null) return;
+    await this.update((current) => {
+      if (current === null) return undefined;
       const target = sessionId ?? current.sessionId;
       const next: DirectBinding = { ...current };
       let changed = false;
@@ -100,31 +107,35 @@ export class DirectBindingStore {
         next.frontTitle = title;
         changed = true;
       }
-      if (!changed) return;
+      return changed ? next : undefined;
+    });
+  }
+
+  async clear(): Promise<void> {
+    await this.update(() => null);
+  }
+
+  /**
+   * 排队做一次读改写。mutator 返回 undefined 表示不变，null 表示清空。
+   * 所有状态变更都走这里，避免命令拿着旧快照覆盖期间到达的标题事件。
+   */
+  async update(mutator: (current: DirectBinding | null) => DirectBinding | null | undefined): Promise<void> {
+    const run = this.#queue.then(async () => {
+      const current = await this.get();
+      const next = mutator(current);
+      if (next === undefined) return;
+      if (next === null && current === null) return;
       this.#binding = next;
-      await writePrivateFile(this.#path, `${JSON.stringify(next, null, 2)}\n`);
+      const text = `${JSON.stringify(next, null, 2)}\n`;
+      await writePrivateFile(this.#path, text);
     });
     this.#queue = run.catch(() => undefined);
     await run;
   }
 
-  async clear(): Promise<void> {
-    this.#binding = null;
-    await this.#enqueueWrite();
-  }
-
   /** 等排队中的写入落盘（测试与停机用）。 */
   async drain(): Promise<void> {
     await this.#queue;
-  }
-
-  /** 排队写当前内存值：执行时再序列化，避免后到的标题被先到的绑定覆盖。 */
-  #enqueueWrite(): Promise<void> {
-    const run = this.#queue.then(() =>
-      writePrivateFile(this.#path, `${JSON.stringify(this.#binding ?? null, null, 2)}\n`),
-    );
-    this.#queue = run.catch(() => undefined);
-    return run;
   }
 }
 

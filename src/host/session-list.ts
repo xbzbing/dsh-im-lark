@@ -21,6 +21,13 @@ const SESSION_PREFIX = 'session-';
 export const SEND_USAGE = '用法：`/send <序号、0 或会话 id> <内容>`。先发 `/sessions` 看序号（`0` 是前台会话）。';
 export const SWITCH_USAGE = '用法：`/switch <序号、0、front 或会话 id>`；`0` 与 `front` 回到前台会话。';
 
+/** 没有前台会话时的提示：有绑定说明是旧记录丢了，不能再让人发消息等新建。 */
+export function frontMissingHint(hasBinding: boolean): string {
+  return hasBinding
+    ? '没有前台会话记录：发 /new 开新会话。'
+    : '还没有前台会话：先发一条消息建会话。';
+}
+
 /** 前台会话的固定引用：`0` 或 `front`（大小写不敏感）。 */
 export function isFrontRef(ref: string): boolean {
   const token = ref.trim().toLowerCase();
@@ -109,6 +116,8 @@ export interface SessionListView {
   /** 快照里的会话数（翻页能翻到的）。 */
   total: number;
   currentId?: string;
+  /** 有前台会话时，footer 才提示 `/switch 0` / `/send 0`。 */
+  hasFront?: boolean;
   /** 宿主的会话比快照多，后面的没有列出。 */
   truncated?: boolean;
 }
@@ -132,7 +141,8 @@ export function renderSessionList(view: SessionListView): string {
   ];
   if (view.truncated === true) lines.push('只列最近 100 个会话，更多请到 DSH 网页端查看。', '');
   if (view.page < view.pages) lines.push(`发 \`/sessions ${view.page + 1}\` 看下一页。`, '');
-  lines.push('发 `/switch <序号>` 切换会话，`/switch 0` 回到前台会话；`/send <序号> <内容>` 发到某个会话，那一轮的回答回到这里。序号在下次发 `/sessions` 之前不变。');
+  const frontTip = view.hasFront === true ? '`/switch 0` 回到前台会话，`/send 0` 发到前台；' : '';
+  lines.push(`发 \`/switch <序号>\` 切换会话，${frontTip}\`/send <序号>\` 发到某个会话，那一轮的回答回到这里。序号在下次发 \`/sessions\` 之前不变。`);
   return lines.join('\n');
 }
 
