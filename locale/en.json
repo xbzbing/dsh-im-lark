@@ -78,7 +78,7 @@
   "direct.summaryCore": "Switched to the super agent; these settings no longer apply",
   "direct.groupSession": "Session",
   "direct.steer": "Steer the running turn",
-  "direct.steerHint": "A message sent mid-turn joins the current turn; off means it queues until the turn ends.",
+  "direct.steerHint": "Regular messages and /send join a running turn; turn this off to queue until the turn ends. /queue always queues and ignores this switch.",
   "direct.workspace": "Session workspace",
   "direct.workspaceHint": "Where new sessions are created; send /new to apply.",
   "direct.workspaceDefault": "Default (Lark session)",

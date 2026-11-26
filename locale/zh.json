@@ -78,7 +78,7 @@
   "direct.summaryCore": "已切换到超级助理，此处配置不再生效",
   "direct.groupSession": "会话",
   "direct.steer": "回合内插话",
-  "direct.steerHint": "回合正在跑时又发消息，直接插进当前回合；关掉则排队等这一轮结束。",
+  "direct.steerHint": "普通消息与 /send 在目标回合正在跑时直接插进当前回合；关掉则排队等这一轮结束。/queue 始终排队，不受此开关影响。",
   "direct.workspace": "会话工作区",
   "direct.workspaceHint": "新会话建在哪个工作区；改完发 /new 生效。",
   "direct.workspaceDefault": "默认（飞书会话）",
