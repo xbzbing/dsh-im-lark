@@ -51,7 +51,7 @@ export class DoneAlign {
   }
 
   /**
-   * 绑定会话换了（`/new`、`/sessions <序号>`）：旧会话的 `turn/end` 会被会话校验
+   * 绑定会话换了（`/new`）：旧会话的 `turn/end` 会被会话校验
    * 丢弃，残留条目永远等不到自己的回合，只会被下一轮错认。整队清掉。
    */
   clear(): void {

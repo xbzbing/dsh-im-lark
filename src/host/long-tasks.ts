@@ -18,7 +18,7 @@
  * 主人自己按了停止（`reason.reason.kind === 'user'`）不算失败，静默丢弃。
  */
 
-import { textFromAssistantMessage } from './standalone.ts';
+import { textFromAssistantMessage } from './session-text.ts';
 
 export interface LongTaskLogger {
   info?(...args: unknown[]): unknown;

@@ -5,6 +5,7 @@ import { defaultSettings, normalizePluginConfig } from '../../src/host/config.ts
 import type { LarkApi } from '../../src/host/lark/api.ts';
 import { createLarkStack } from '../../src/host/stack.ts';
 import { DirectBindingStore, OwnerStore } from '../../src/host/state/direct.ts';
+import { ListingStore } from '../../src/host/state/listing.ts';
 import { withTempDir } from './helpers/temp.ts';
 
 /** 只记录表情回应：栈的职责是「什么时候打、打给谁」，其余能力不参与本用例。 */
@@ -52,6 +53,7 @@ async function withStack(
       settings: () => defaultSettings(config),
       bindings: new DirectBindingStore({ dataDir: dir.path }),
       owners: new OwnerStore({ dataDir: dir.path }),
+      listing: new ListingStore({ dataDir: dir.path }),
       controller: () => null,
       createApi: () => fakeApi(reactions),
       ...(options.typing === undefined ? {} : { typing: options.typing }),

@@ -10,6 +10,7 @@ import { parseCommand } from '../../src/host/standalone-command.ts';
 import { StandaloneChat, buildContent, formatDuration } from '../../src/host/standalone.ts';
 import type { StandaloneController } from '../../src/host/standalone.ts';
 import { DirectBindingStore, OwnerStore } from '../../src/host/state/direct.ts';
+import { ListingStore } from '../../src/host/state/listing.ts';
 import { withTempDir } from './helpers/temp.ts';
 
 function settingsOf(patch: Partial<LocalSettings> = {}): LocalSettings {
@@ -26,6 +27,7 @@ interface Harness {
   cancelled: string[];
   bindings: DirectBindingStore;
   owners: OwnerStore;
+  listing: ListingStore;
 }
 
 async function harness(
@@ -38,6 +40,12 @@ async function harness(
     markDone?: (platformMessageId: string) => void;
     /** 出站是否报错（模拟平台发送失败）。 */
     deliverError?: string;
+    /** 复用已有的序号快照（模拟插件重启）。 */
+    listing?: ListingStore;
+    /** `/send` 等回答的上限与定时器（超时用例）。 */
+    sendTimeoutMs?: number;
+    setTimer?: (callback: () => void, ms: number) => unknown;
+    clearTimer?: (handle: unknown) => void;
   } = {},
 ): Promise<Harness> {
   const deliveries: OutboundInput[] = [];
@@ -85,20 +93,25 @@ async function harness(
 
   const bindings = new DirectBindingStore({ dataDir: dir });
   const owners = new OwnerStore({ dataDir: dir });
+  const listing = options.listing ?? new ListingStore({ dataDir: dir });
 
   const chat = new StandaloneChat({
     outbound,
     bindings,
     owners,
+    listing,
     settings: () => settingsOf(options.settings),
     controller: () => controller,
     workspaceId: options.workspaceId,
     ownerLabel: () => 'abcdef',
     now: () => 1_000,
     ...(options.markDone === undefined ? {} : { markDone: options.markDone }),
+    ...(options.sendTimeoutMs === undefined ? {} : { sendTimeoutMs: options.sendTimeoutMs }),
+    ...(options.setTimer === undefined ? {} : { setTimer: options.setTimer }),
+    ...(options.clearTimer === undefined ? {} : { clearTimer: options.clearTimer }),
   });
 
-  return { chat, deliveries, prompts, created, createArgs, cancelled, bindings, owners };
+  return { chat, deliveries, prompts, created, createArgs, cancelled, bindings, owners, listing };
 }
 
 let sequence = 0;
@@ -136,10 +149,12 @@ test('命令解析：认清单里的命令，未知命令单独标出', () => {
   assert.deepEqual(parseCommand('/status'), { kind: 'status' });
   assert.deepEqual(parseCommand('/stop'), { kind: 'stop' });
   assert.deepEqual(parseCommand('/trace'), { kind: 'trace' });
-  assert.deepEqual(parseCommand('/send 你好 世界'), { kind: 'send', text: '你好 世界' });
-  assert.deepEqual(parseCommand('/send'), { kind: 'help' });
+  assert.deepEqual(parseCommand('/send 2 你好 世界'), { kind: 'send', ref: '2', text: '你好 世界' });
+  assert.deepEqual(parseCommand('/send 2 第一行\n第二行'), { kind: 'send', ref: '2', text: '第一行\n第二行' });
+  assert.deepEqual(parseCommand('/send'), { kind: 'send', ref: '', text: '' });
+  assert.deepEqual(parseCommand('/send 2'), { kind: 'send', ref: '2', text: '' });
   assert.deepEqual(parseCommand('/sessions'), { kind: 'sessions' });
-  assert.deepEqual(parseCommand('/sessions 3'), { kind: 'sessions', index: 3 });
+  assert.deepEqual(parseCommand('/sessions 3'), { kind: 'sessions', page: 3 });
   assert.deepEqual(parseCommand('/sessions abc'), { kind: 'sessions' });
   assert.deepEqual(parseCommand('/nope'), { kind: 'unknown', name: 'nope' });
 });
@@ -236,20 +251,15 @@ test('独立模式：/new 清掉绑定，下一条消息建新会话', async () 
   });
 });
 
-test('独立模式：/stop 调宿主 cancel；/send 只发文本', async () => {
+test('独立模式：/stop 调宿主 cancel', async () => {
   await withTempDir(async (dir) => {
-    const { chat, cancelled, prompts, deliveries } = await harness(dir.path);
+    const { chat, cancelled } = await harness(dir.path);
     const bind = inbound();
     await chat.handleInbound(bind, draftOf(bind, '建会话'));
 
     const stop = inbound();
     await chat.handleInbound(stop, draftOf(stop, '/stop'));
     assert.deepEqual(cancelled, ['s_1']);
-
-    const send = inbound();
-    await chat.handleInbound(send, draftOf(send, '/send 直接发送'));
-    assert.equal(deliveries.at(-1)!.text, '直接发送');
-    assert.equal(prompts.length, 1, '命令不进模型');
   });
 });
 
@@ -341,11 +351,11 @@ test('独立模式：宿主没有会话控制器时明确说明消息没进会�
   });
 });
 
-test('独立模式：/sessions 列出最近会话，带序号切换', async () => {
+test('独立模式：/sessions 列出会话与序号，不切换绑定', async () => {
   await withTempDir(async (dir) => {
     const rows = [
-      { sessionId: 's_a', projections: { values: { title: '甲' } } },
-      { sessionId: 's_b', projections: { values: { title: '乙' } } },
+      { sessionId: 's_1', projections: { values: { title: '甲' } }, running: false },
+      { sessionId: 's_2', projections: { values: { title: '乙' } }, running: true },
     ];
     const { chat, deliveries, bindings } = await harness(dir.path, { listRows: rows });
 
@@ -355,12 +365,16 @@ test('独立模式：/sessions 列出最近会话，带序号切换', async () =
 
     const list = inbound();
     await chat.handleInbound(list, draftOf(list, '/sessions'));
-    assert.match(deliveries.at(-1)!.text, /1\. 甲/);
-    assert.match(deliveries.at(-1)!.text, /2\. 乙/);
+    const text = deliveries.at(-1)!.text;
+    assert.match(text, /1 \| 甲（当前）/);
+    assert.match(text, /2 \| 乙/);
+    assert.match(text, /运行中/);
+    assert.equal((await bindings.get())?.sessionId, 's_1');
 
-    const switchTo = inbound();
-    await chat.handleInbound(switchTo, draftOf(switchTo, '/sessions 2'));
-    assert.equal((await bindings.get())?.sessionId, 's_b');
+    // 页码只翻页，不再换会话。
+    const page = inbound();
+    await chat.handleInbound(page, draftOf(page, '/sessions 2'));
+    assert.equal((await bindings.get())?.sessionId, 's_1');
   });
 });
 
@@ -531,39 +545,5 @@ test('独立模式：/new 清空待结算队列，被放弃的消息不会被下
 
     assert.deepEqual(marked, [command.messageId, fresh.messageId]);
     assert.ok(!marked.includes(stale.messageId), '被放弃的消息不能盖完成标记');
-  });
-});
-
-test('独立模式：/sessions 切换清空待结算队列', async () => {
-  await withTempDir(async (dir) => {
-    const marked: string[] = [];
-    const { chat } = await harness(dir.path, {
-      listRows: [
-        { sessionId: 's_1', projections: { values: { title: '一' } } },
-        { sessionId: 's_2', projections: { values: { title: '二' } } },
-      ],
-      markDone: (id) => marked.push(id),
-    });
-
-    const stale = inbound();
-    await chat.handleInbound(stale, draftOf(stale, '旧会话里问的'));
-    const command = inbound();
-    await chat.handleInbound(command, draftOf(command, '/sessions 2'));
-
-    // 切到 s_2 后 s_1 的 turn/end 被会话校验丢弃；残留条目不能留到新会话的回合。
-    chat.handleEvent('s_1', { type: 'turn/start', data: {} });
-    chat.handleEvent('s_1', { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '旧会话的答' }] } } });
-    chat.handleEvent('s_1', { type: 'turn/end', data: {} });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    const fresh = inbound();
-    await chat.handleInbound(fresh, draftOf(fresh, '在切过去的会话里问'));
-    chat.handleEvent('s_2', { type: 'turn/start', data: {} });
-    chat.handleEvent('s_2', { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '答' }] } } });
-    chat.handleEvent('s_2', { type: 'turn/end', data: {} });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    assert.deepEqual(marked, [command.messageId, fresh.messageId]);
-    assert.ok(!marked.includes(stale.messageId));
   });
 });

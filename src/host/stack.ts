@@ -26,6 +26,7 @@ import type { LarkEventSink } from './runtime.ts';
 import { StandaloneChat } from './standalone.ts';
 import type { StandaloneController } from './standalone.ts';
 import type { DirectBindingStore, OwnerStore } from './state/direct.ts';
+import type { ListingStore } from './state/listing.ts';
 
 export interface LarkStackOptions {
   app: LarkCredentials;
@@ -42,6 +43,8 @@ export interface LarkStackOptions {
   settings: () => LocalSettings;
   bindings: DirectBindingStore;
   owners: OwnerStore;
+  /** `/sessions` 的序号快照。 */
+  listing: ListingStore;
   /** 宿主的会话控制器；没注入时为 null（独立模式不可用）。 */
   controller: () => StandaloneController | null;
   /** 独立模式的默认工作区 id（插件自动创建）；空串表示用宿主默认位置。 */
@@ -122,6 +125,7 @@ export function createLarkStack(options: LarkStackOptions): LarkStack {
     outbound: standaloneOutbound,
     bindings: options.bindings,
     owners: options.owners,
+    listing: options.listing,
     settings: options.settings,
     controller: options.controller,
     logger,
@@ -192,6 +196,7 @@ export function createLarkStack(options: LarkStackOptions): LarkStack {
       await api.patchCard({ messageId, card });
     },
     dispose: () => {
+      standalone.stop();
       bridge.dispose();
       void pipeline.drain();
     },

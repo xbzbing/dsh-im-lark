@@ -12,50 +12,32 @@
 import { randomUUID } from 'node:crypto';
 
 import { DoneAlign } from './done-align.ts';
+import { buildContent } from './prompt-content.ts';
+import { SESSION_PAGE_SIZE, loadSessionCatalog, renderSessionList } from './session-list.ts';
+import { SendWatcher } from './session-watch.ts';
+import { asRecord, textFromAssistantMessage } from './session-text.ts';
+import { handleSendCommand } from './standalone-send.ts';
 import type { StandaloneCommand } from './standalone-command.ts';
 import { HELP_TEXT, parseCommand } from './standalone-command.ts';
+import type { BusyMode, StandaloneController } from './standalone-types.ts';
 import type { LarkLogger } from './lark/connection.ts';
 import type { LarkInboundMessage } from './lark/types.ts';
 import type { OutboundChannel } from './outbound.ts';
 import type { OwnerMessageDraft } from './protocol.ts';
 import type { LocalSettings } from './config.ts';
 import type { DirectBindingStore, OwnerStore } from './state/direct.ts';
+import { MAX_LISTING } from './state/listing.ts';
+import type { ListingStore } from './state/listing.ts';
 
-export type BusyMode = 'queue' | 'steer';
-
-export type PromptPart =
-  | { type: 'text'; text: string }
-  | { type: 'image'; mediaType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif'; data: string; name?: string };
-
-export interface SessionRow {
-  sessionId?: unknown;
-  running?: unknown;
-  updatedAt?: unknown;
-  projections?: { values?: Record<string, unknown> } | null;
-}
-
-/** 宿主 `sessionController` 里本模块用到的方法（结构类型）。 */
-export interface StandaloneController {
-  create(request: { workspaceId?: string }): Promise<{ sessionId: string }>;
-  prompt(
-    request: {
-      requestId: string;
-      sessionId: string;
-      mode: BusyMode;
-      content: readonly PromptPart[];
-      clientTimeZone?: string;
-    },
-    signal: AbortSignal,
-  ): Promise<{ accepted?: boolean }>;
-  cancel?(request: { sessionId: string }): { accepted?: boolean } | Promise<{ accepted?: boolean }>;
-  list?(request: Record<string, unknown>, signal: AbortSignal): Promise<{ items?: readonly SessionRow[] }>;
-  rename?(request: { sessionId: string; title: string }): Promise<unknown>;
-}
+export type { BusyMode, PromptPart, StandaloneController } from './standalone-types.ts';
+export { buildContent } from './prompt-content.ts';
 
 export interface StandaloneOptions {
   outbound: OutboundChannel;
   bindings: DirectBindingStore;
   owners: OwnerStore;
+  /** `/sessions` 的序号快照（落盘在 `sessions.json`）。 */
+  listing: ListingStore;
   settings: () => LocalSettings;
   controller: () => StandaloneController | null;
   /** 插件自动创建的默认工作区 id；空串表示用宿主默认位置。 */
@@ -66,6 +48,11 @@ export interface StandaloneOptions {
   ownerLabel?: () => string;
   /** 提交超时：只约束「受理前」的等待。 */
   submitTimeoutMs?: number;
+  /** `/send` 等回答的上限（默认 30 分钟；测试可调小）。 */
+  sendTimeoutMs?: number;
+  /** 测试注入的定时器（生产用 `setTimeout().unref()`）。 */
+  setTimer?: (callback: () => void, ms: number) => unknown;
+  clearTimer?: (handle: unknown) => void;
   /**
    * 这一轮真正结束（回答已发出）或命令处理完后，给触发它的原消息补 `DONE`
    * （入参是平台消息 id）。是否打表情（面板开关）由注入方判断。
@@ -88,12 +75,12 @@ interface TraceRecord {
 }
 
 const SUBMIT_TIMEOUT_MS = 30_000;
-const LIST_LIMIT = 10;
 
 export class StandaloneChat {
   readonly #outbound: OutboundChannel;
   readonly #bindings: DirectBindingStore;
   readonly #owners: OwnerStore;
+  readonly #listing: ListingStore;
   readonly #settings: () => LocalSettings;
   readonly #controller: () => StandaloneController | null;
   readonly #workspaceId: () => string;
@@ -102,6 +89,7 @@ export class StandaloneChat {
   readonly #ownerLabel: () => string;
   readonly #submitTimeoutMs: number;
   readonly #markDone: ((platformMessageId: string) => void) | undefined;
+  readonly #watcher: SendWatcher;
 
   #chatId = '';
   #lastUserMessageId: string | undefined;
@@ -123,6 +111,7 @@ export class StandaloneChat {
     this.#outbound = options.outbound;
     this.#bindings = options.bindings;
     this.#owners = options.owners;
+    this.#listing = options.listing;
     this.#settings = options.settings;
     this.#controller = options.controller;
     this.#workspaceId = options.workspaceId ?? (() => '');
@@ -131,6 +120,15 @@ export class StandaloneChat {
     this.#ownerLabel = options.ownerLabel ?? (() => '');
     this.#submitTimeoutMs = options.submitTimeoutMs ?? SUBMIT_TIMEOUT_MS;
     this.#markDone = options.markDone;
+    this.#watcher = new SendWatcher({
+      deliver: (target, text) => this.#deliverTo(target.chatId, text, target.replyTo),
+      ...(options.markDone === undefined ? {} : { onDelivered: options.markDone }),
+      now: this.#now,
+      logger: this.#logger,
+      ...(options.sendTimeoutMs === undefined ? {} : { timeoutMs: options.sendTimeoutMs }),
+      ...(options.setTimer === undefined ? {} : { setTimer: options.setTimer }),
+      ...(options.clearTimer === undefined ? {} : { clearTimer: options.clearTimer }),
+    });
   }
 
   status(): StandaloneStatus {
@@ -158,9 +156,9 @@ export class StandaloneChat {
     const text = draft.text.trim();
     const command = parseCommand(text);
     if (command !== null) {
-      await this.#runCommand(command);
-      // 命令当场就答完了：回复发出即处理结束，补完成标记（失败的回复也一样，命令本身已处理）。
-      this.#markDone?.(message.messageId);
+      // `/send` 要等目标会话那一轮结束才算处理完；其余命令当场就答完了。
+      const awaiting = await this.#runCommand(command, message.messageId, draft);
+      if (!awaiting) this.#markDone?.(message.messageId);
       return;
     }
 
@@ -170,8 +168,10 @@ export class StandaloneChat {
     else this.#align.push(message.messageId, this.#busyMode());
   }
 
-  /** `session/event`：跟踪绑定会话的回合，结束后把回答发回飞书。 */
+  /** `session/event`：`/send` 的目标会话与绑定会话各走一条路。 */
   handleEvent(sessionId: string, event: unknown): void {
+    this.#watcher.handleEvent(sessionId, event);
+
     const binding = this.#bindings.peek();
     if (binding === null || binding.sessionId !== sessionId) return;
     const entry = asRecord(event);
@@ -296,28 +296,29 @@ export class StandaloneChat {
     return task;
   }
 
-  async #runCommand(command: StandaloneCommand): Promise<void> {
+  /** 执行一条命令；返回 `true` 表示还有一轮回答在路上（先别补 `DONE`）。 */
+  async #runCommand(command: StandaloneCommand, messageId: string, draft: OwnerMessageDraft): Promise<boolean> {
     switch (command.kind) {
       case 'help':
         await this.#reply(HELP_TEXT);
-        return;
+        return false;
       case 'new':
         await this.reset();
         await this.#reply('已开新会话，下一条消息会建一个新的。');
-        return;
+        return false;
       case 'status':
         await this.#reply(this.#statusText());
-        return;
+        return false;
       case 'stop': {
         const binding = this.#bindings.peek();
         const controller = this.#controller();
         if (binding === null || controller === null || typeof controller.cancel !== 'function') {
           await this.#reply('当前没有可中止的会话。');
-          return;
+          return false;
         }
         const result = await controller.cancel({ sessionId: binding.sessionId });
         await this.#reply(result?.accepted === false ? '这一轮已经结束了。' : '已请求中止当前回合。');
-        return;
+        return false;
       }
       case 'trace':
         await this.#reply(
@@ -325,52 +326,60 @@ export class StandaloneChat {
             ? '还没有收到过回答。'
             : `上一条回答：模型 ${this.#lastTrace.model === '' ? '未知' : this.#lastTrace.model}，耗时 ${formatDuration(this.#lastTrace.durationMs)}。`,
         );
-        return;
+        return false;
       case 'send':
-        await this.#reply(command.text);
-        return;
+        return handleSendCommand(command, messageId, draft, {
+          controller: () => this.#controller(),
+          listing: this.#listing,
+          bindings: this.#bindings,
+          watcher: this.#watcher,
+          chatId: this.#chatId,
+          submitTimeoutMs: this.#submitTimeoutMs,
+          logger: this.#logger,
+          submitCurrent: (text, value) => this.#submit(text, value),
+          pushAlign: (id) => this.#align.push(id, this.#busyMode()),
+          reply: (text) => this.#reply(text),
+        });
       case 'sessions':
-        await this.#reply(await this.#sessionsText(command.index));
-        return;
+        await this.#showSessions(command.page);
+        return false;
       default:
         await this.#reply(`不认识的命令：/${command.name}\n\n${HELP_TEXT}`);
-        return;
+        return false;
     }
   }
 
-  async #sessionsText(index: number | undefined): Promise<string> {
-    const controller = this.#controller();
-    if (controller === null || typeof controller.list !== 'function') return '宿主没有提供会话列表。';
-
-    let rows: readonly SessionRow[];
-    try {
-      const list = await controller.list({ limit: LIST_LIMIT }, AbortSignal.timeout(10_000));
-      rows = list.items ?? [];
-    } catch (error) {
-      this.#logger.warn?.('会话列表读取失败', errorText(error));
-      return '会话列表读取失败。';
-    }
-    if (rows.length === 0) return '最近没有会话。';
-
-    const current = this.#bindings.peek()?.sessionId;
-    const lines = rows.slice(0, LIST_LIMIT).map((row, position) => {
-      const id = typeof row.sessionId === 'string' ? row.sessionId : '';
-      const title = sessionTitle(row) || id.slice(0, 8);
-      const mark = id === current ? '（当前）' : '';
-      return `${position + 1}. ${title}${mark}`;
-    });
-
-    if (index !== undefined) {
-      const target = rows[index - 1];
-      const id = typeof target?.sessionId === 'string' ? target.sessionId : '';
-      if (target === undefined || id === '') return `没有第 ${index} 个会话。`;
-      await this.#bindings.set({ sessionId: id, workspaceId: '', ...(sessionTitle(target) === '' ? {} : { title: sessionTitle(target) }) });
-      // 换会话后旧会话的 turn/end 不再被接受，残留条目会错挂到新会话的回合上。
-      this.#align.clear();
-      return `已切到：${sessionTitle(target) || id.slice(0, 8)}`;
+  /** `/sessions [页码]`：列一份新快照，序号在下次发 `/sessions` 之前不变。 */
+  async #showSessions(page: number | undefined): Promise<void> {
+    const binding = await this.#bindings.get();
+    const catalog = await loadSessionCatalog(
+      this.#controller(),
+      binding === null ? {} : { keepId: binding.sessionId },
+    );
+    if (!catalog.available) {
+      await this.#reply(catalog.reason ?? '读取会话列表失败。');
+      return;
     }
 
-    return ['最近的会话：', ...lines, '', '用 `/sessions <序号>` 切换。'].join('\n');
+    const visible = catalog.sessions.slice(0, MAX_LISTING);
+    await this.#listing.set(visible);
+    if (visible.length === 0) {
+      await this.#reply('最近没有会话。');
+      return;
+    }
+
+    const pages = Math.max(1, Math.ceil(visible.length / SESSION_PAGE_SIZE));
+    const shown = Math.min(Math.max(1, page ?? 1), pages);
+    const offset = (shown - 1) * SESSION_PAGE_SIZE;
+    await this.#reply(renderSessionList({
+      rows: visible.slice(offset, offset + SESSION_PAGE_SIZE),
+      page: shown,
+      pages,
+      offset,
+      total: visible.length,
+      ...(binding === null ? {} : { currentId: binding.sessionId }),
+      ...(catalog.sessions.length > visible.length ? { truncated: true } : {}),
+    }));
   }
 
   #statusText(): string {
@@ -398,6 +407,11 @@ export class StandaloneChat {
 
     // 重启后事件可能先到（绑定还在、本次进程还没收到过消息）：退回主人最近一次的会话。
     const chatId = this.#chatId !== '' ? this.#chatId : (await this.#owners.get())?.chatId ?? '';
+    return this.#deliverTo(chatId, body, this.#lastUserMessageId);
+  }
+
+  /** 发到指定会话；`/send` 的回答要回到发命令的那个聊天，不能跟着当前会话走。 */
+  async #deliverTo(chatId: string, text: string, replyTo?: string): Promise<boolean> {
     if (chatId === '') {
       this.#logger.warn?.('独立模式回复没有目标会话，已丢弃');
       return false;
@@ -406,8 +420,8 @@ export class StandaloneChat {
     const receipt = await this.#outbound.deliver({
       deliveryId: `direct-${this.#now()}-${(this.#sequence += 1)}`,
       chatId,
-      text: body,
-      ...(this.#lastUserMessageId === undefined ? {} : { replyTo: this.#lastUserMessageId }),
+      text,
+      ...(replyTo === undefined ? {} : { replyTo }),
     });
     if (receipt.errorCode !== undefined) {
       this.#logger.warn?.('独立模式回复没有发出去', receipt.error ?? receipt.errorCode);
@@ -415,39 +429,16 @@ export class StandaloneChat {
     }
     return true;
   }
-}
 
-/** 文字在前、图片在后；附件在独立模式下先只给提示。 */
-export function buildContent(text: string, draft: OwnerMessageDraft): PromptPart[] {
-  const parts: PromptPart[] = [];
-  const body = text.trim();
-  if (body === '' && (draft.images ?? []).length === 0) parts.push({ type: 'text', text: '（空消息）' });
-  if (body !== '') parts.push({ type: 'text', text: body });
-  for (const image of draft.images ?? []) {
-    parts.push({ type: 'image', mediaType: image.mediaType, data: image.data, ...(image.name === undefined ? {} : { name: image.name }) });
+  /** 停机：收掉 `/send` 的等待定时器。 */
+  stop(): void {
+    this.#watcher.stop();
   }
-  const fileCount = draft.files?.length ?? 0;
-  if (fileCount > 0) {
-    parts.push({ type: 'text', text: `（收到 ${fileCount} 个文件；独立模式暂不转发文件内容）` });
-  }
-  return parts;
-}
 
-/** 从 `assistant/message` 的 content 块里取文字。 */
-export function textFromAssistantMessage(message: unknown): string {
-  const content = asRecord(message)?.content;
-  if (!Array.isArray(content)) return '';
-  let text = '';
-  for (const block of content) {
-    const item = asRecord(block);
-    if (item !== null && item.type === 'text' && typeof item.text === 'string') text += item.text;
+  /** 等 `/send` 的推送发完（测试与停机对齐用）。 */
+  async drain(): Promise<void> {
+    await this.#watcher.drain();
   }
-  return text;
-}
-
-function sessionTitle(row: SessionRow): string {
-  const values = row.projections?.values;
-  return values !== undefined && typeof values.title === 'string' ? values.title : '';
 }
 
 function statusLine(trace: TraceRecord): string {
@@ -460,10 +451,6 @@ export function formatDuration(ms: number): string {
   if (ms < 60_000) return `${Math.max(0, Math.round(ms / 1000))} 秒`;
   const minutes = Math.floor(ms / 60_000);
   return `${minutes} 分 ${Math.round((ms % 60_000) / 1000)} 秒`;
-}
-
-function asRecord(value: unknown): Record<string, any> | null {
-  return value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, any>) : null;
 }
 
 function errorText(error: unknown): string {

@@ -30,6 +30,7 @@ import { createLarkStack } from './stack.ts';
 import type { LarkStack } from './stack.ts';
 import { CredentialStore } from './state/credentials.ts';
 import { DirectBindingStore, OwnerStore } from './state/direct.ts';
+import { ListingStore } from './state/listing.ts';
 import type { StandaloneController } from './standalone.ts';
 import { ensurePrivateDir } from './state/files.ts';
 import { resolveDefaultWorkspace } from './state/paths.ts';
@@ -66,6 +67,7 @@ export async function apply(ctx: PluginContext, config: PluginConfig | unknown =
   const settings = new LocalConfigStore({ dataDir: normalized.dataDir, config: normalized, logger });
   const bindings = new DirectBindingStore({ dataDir: normalized.dataDir, logger });
   const owners = new OwnerStore({ dataDir: normalized.dataDir, logger });
+  const listing = new ListingStore({ dataDir: normalized.dataDir, logger });
   // 默认工作区目录与状态目录分开：会话的 cwd 不该能读到 App Secret。
   const workspaces = new Workspaces({ dir: resolveDefaultWorkspace(), logger });
 
@@ -173,6 +175,7 @@ export async function apply(ctx: PluginContext, config: PluginConfig | unknown =
       settings: () => settings.current,
       bindings,
       owners,
+      listing,
       controller: () => controller,
       workspaceId: () => workspaces.defaultId,
       // 提醒的作答先于普通消息：主人回「批准」「2」时不该把它当聊天送进会话。
