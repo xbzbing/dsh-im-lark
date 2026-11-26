@@ -4,7 +4,16 @@ import { test } from 'node:test';
 import { createLarkBridge } from '../../src/host/bridge.ts';
 import type { LarkApi } from '../../src/host/lark/api.ts';
 import type { LarkLogger } from '../../src/host/lark/connection.ts';
-import type { AcceptResult, BridgeHandle, BridgeProvider, Delivery, InteractionAnswerDraft, OwnerMessageDraft } from '../../src/host/protocol.ts';
+import type {
+  AcceptResult,
+  BridgeHandle,
+  BridgeProvider,
+  Delivery,
+  InteractionAnswerDraft,
+  InteractionAnswerItem,
+  InteractionQuestion,
+  OwnerMessageDraft,
+} from '../../src/host/protocol.ts';
 
 /** 桥对平台发出的操作：契约用例据此判断「有没有真的再发一次」。 */
 interface NativeOperation {
@@ -165,6 +174,26 @@ const DELIVERY: Delivery = {
   title: '回答',
   body: '这是正文',
 };
+
+/**
+ * 本地镜像核心 `validateAnswer` 的判定：题 id 必须存在且各答一次，选中项必须是
+ * 该题的选项，单选最多一项，每项至少要有非空 selected 或 custom。
+ *
+ * 仓库不允许依赖 `dsh-my-superagent`，这里只做契约对照；核心规则变了要同步改。
+ */
+function acceptableAnswer(questions: readonly InteractionQuestion[], answers: readonly InteractionAnswerItem[]): boolean {
+  const seen = new Set<string>();
+  for (const answer of answers) {
+    if (answer.selected.length === 0 && (answer.custom ?? '').trim() === '') return false;
+    const question = questions.find((candidate) => candidate.id === answer.id);
+    if (question === undefined || seen.has(answer.id)) return false;
+    seen.add(answer.id);
+    const labels = (question.options ?? []).map((option) => option.label);
+    if (answer.selected.some((label) => !labels.includes(label))) return false;
+    if (question.multiSelect !== true && answer.selected.length > 1) return false;
+  }
+  return seen.size === questions.length;
+}
 
 test('桥：能力声明是合法形状', () => {
   const { provider } = fixture();
@@ -335,6 +364,80 @@ test('桥：多题只答一半时整单退回并重画卡片，指出缺哪一�
   assert.equal(patches.length, 1);
   assert.match(JSON.stringify(patches[0]), /第 2 题/u);
   assert.match(JSON.stringify(patches[0]), /"tag":"checker"/u);
+});
+
+test('桥：表单作答产物满足核心 validateAnswer 规则', async () => {
+  const { provider, bridge } = fixture();
+  const core = coreHandle();
+  bridge.attach(core.handle);
+
+  const interaction = {
+    questions: [
+      { id: 'q1', question: '单选', options: [{ label: '一' }, { label: '二' }] },
+      { id: 'q2', question: '多选', multiSelect: true, options: [{ label: '甲' }, { label: '乙' }] },
+      { id: 'q3', question: '自由文本' },
+    ],
+  };
+  await provider.deliver({ ...DELIVERY, id: 'dlv_contract', intent: 'action', interaction });
+
+  const result = await bridge.applyCardAction({
+    eventId: 'ev_contract',
+    messageId: 'om_1',
+    chatId: 'oc_chat',
+    operatorOpenId: 'ou_owner',
+    value: { d: 'dlv_contract' },
+    formValues: {
+      answer_0_1: true,
+      answer_1_0: true,
+      answer_1_1: true,
+      custom_1: '补充',
+      custom_2: ' 自由文本 ',
+    },
+  });
+
+  assert.deepEqual(result, { accepted: true });
+  const answers = core.answers[0]!.answers;
+  assert.deepEqual(answers, [
+    { id: 'q1', selected: ['二'] },
+    { id: 'q2', selected: ['甲', '乙'], custom: '补充' },
+    { id: 'q3', selected: [], custom: '自由文本' },
+  ]);
+  assert.equal(acceptableAnswer(interaction.questions, answers), true);
+  // 反例：单选勾了两项，核心会整单拒绝。
+  assert.equal(acceptableAnswer(interaction.questions, [{ id: 'q1', selected: ['一', '二'] }]), false);
+});
+
+test('桥：交互卡超限时降级为纯文本卡片，回执说明并给出文字作答指引', async () => {
+  const { provider, bridge, contents } = fixture({ maxText: 100_000 });
+  const questions = Array.from({ length: 10 }, (_, index) => ({
+    id: `q${index}`,
+    question: `第 ${index + 1} 题`,
+    options: Array.from({ length: 21 }, (_, option) => ({ label: `选项 ${option + 1}` })),
+  }));
+
+  const receipt = await provider.deliver({
+    ...DELIVERY,
+    id: 'dlv_big',
+    intent: 'action',
+    interaction: { questions },
+  });
+
+  assert.equal(receipt.status, 'sent');
+  assert.match(receipt.error ?? '', /降级为纯文本卡片/u);
+  // 降级后没有可点的卡片，不能再登记成「待作答」。
+  assert.equal(bridge.interactions.size, 0);
+
+  const card = JSON.parse(contents[0]!) as {
+    header: { title: { content: string } };
+    body: { elements: Array<{ tag: string; content?: string }> };
+  };
+  // 标题只在卡片头出现一次，正文不再重复。
+  assert.equal(card.header.title.content, '回答');
+  assert.equal(card.body.elements.every((element) => element.tag === 'markdown'), true);
+  const text = card.body.elements.map((element) => element.content ?? '').join('\n');
+  assert.doesNotMatch(text, /\*\*/u);
+  assert.match(text, /按题目顺序分行/u);
+  assert.match(text, /交互已降级为纯文本卡片/u);
 });
 
 test('桥：流式修订原地更新，迟到修订不产生操作', async () => {

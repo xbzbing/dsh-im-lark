@@ -9,14 +9,15 @@
  */
 
 import { DEFAULT_MAX_TEXT_CHARS } from '../shared/limits.ts';
-import { InteractionStore, answerFromAction, isAnswerable, renderAnsweredCard, renderDeliveryCard, renderRejectedCard, renderRetryCard, renderSupersededCard, cardFits } from './cards.ts';
+import { InteractionStore, MAX_ANSWER_QUESTIONS, answerFromAction, isAnswerable, renderAnsweredCard, renderDeliveryCard, renderRejectedCard, renderRetryCard, renderSupersededCard, cardFits } from './cards.ts';
 import type { Card } from './cards.ts';
+import { errorText, failure, renderFallbackText } from './bridge-text.ts';
 import type { LarkApi } from './lark/api.ts';
 import type { LarkLogger } from './lark/connection.ts';
 import type { LarkCardAction } from './lark/types.ts';
+import { extensionOf } from './media.ts';
 import { OutboundChannel } from './outbound.ts';
 import { PROTOCOL_V1 } from './protocol.ts';
-import { interactionText } from './question-text.ts';
 import type {
   AcceptResult,
   BridgeCapabilities,
@@ -40,7 +41,7 @@ const CAPABILITIES: BridgeCapabilities = {
     freeText: true,
     maxOptions: 20,
     // 多题收进同一张表单一次提交，所以能答满协议上限（`maxQuestions` schema 封顶 10）。
-    maxQuestions: 10,
+    maxQuestions: MAX_ANSWER_QUESTIONS,
     updateAfterAnswer: 'any',
   }),
   edit: Object.freeze({ scope: 'any', minIntervalMs: 2_000, maxLifetimeMs: 14 * 24 * 60 * 60 * 1000 }),
@@ -208,10 +209,10 @@ export function createLarkBridge(deps: BridgeDeps): LarkBridge {
 
     const card = renderDeliveryCard(delivery, { interactive: delivery.interaction !== undefined });
     const useCard = cardFits(card);
-    // 交互卡装不下时明确降级并回失败码：只发纯文本再回「已送达」会让核心白等作答。
+    // 交互卡装不下时明确降级：内容照发，回执里带 error 说明；状态仍是 sent，避免核心重投。
     const interactionDropped = delivery.interaction !== undefined && !useCard;
     const fallbackNote = interactionDropped
-      ? '\n\n（内容超过卡片上限，交互已降级为纯文本；可直接回复文字作答，或到 Web 端处理。）'
+      ? '\n\n（内容超过卡片上限，交互已降级为纯文本卡片；可直接回复文字作答，或到 Web 端处理。）'
       : '';
     const replyTarget = delivery.inReplyTo === undefined ? undefined : inbound.get(delivery.inReplyTo);
 
@@ -287,7 +288,7 @@ export function createLarkBridge(deps: BridgeDeps): LarkBridge {
     };
     // 内容已经送达，只是交互改在文字上作答；回成功避免核心重投或换路由。
     return interactionDropped
-      ? { ...sent, error: '交互卡片超过平台上限，已降级为纯文本；可在飞书回复文字作答，或到 Web 端处理' }
+      ? { ...sent, error: '交互卡片超过平台上限，已降级为纯文本卡片；可在飞书回复文字作答，或到 Web 端处理' }
       : sent;
   }
 
@@ -361,7 +362,9 @@ export function createLarkBridge(deps: BridgeDeps): LarkBridge {
     const terminal = TERMINAL_REJECTS.has(reason);
     const record = deliveryId === undefined ? undefined : delivered.get(deliveryId);
     if (record !== undefined) {
-      const card = terminal ? renderRejectedCard(record.delivery, note) : renderRetryCard(record.delivery, note);
+      const card = terminal
+        ? renderRejectedCard(record.delivery, note)
+        : renderRetryCard(record.delivery, note, action.formValues);
       try {
         await deps.api.patchCard({ messageId: record.messageId, card });
         if (terminal && deliveryId !== undefined) interactions.delete(deliveryId);
@@ -469,46 +472,5 @@ function remember<K, V>(map: Map<K, V>, key: K, value: V, max: number): void {
     const oldest = map.keys().next();
     if (oldest.done) break;
     map.delete(oldest.value);
-  }
-}
-
-/** 协议规定 `Receipt.error` 最多 500 字符；超长会让核心解析失败并按 uncertain 重投。 */
-function truncateError(error: string): string {
-  return error.length > 500 ? `${error.slice(0, 497)}...` : error;
-}
-
-function failure(deliveryId: string, errorCode: NonNullable<Receipt['errorCode']>, error: string): Receipt {
-  return { deliveryId, status: 'failed', messagesSent: 0, errorCode, error: truncateError(error) };
-}
-
-/**
- * 卡片装不下时退回文本：标题 + 正文 + 详情 + 交互。
- *
- * 交互必须一起带上——降级成文本后用户只能文字作答，不给题目和选项就没法答；
- * 文本消息不渲染 Markdown，所以按纯文本形态渲染（不加粗、不用星号）。
- */
-function renderFallbackText(delivery: Delivery): string {
-  const interaction = delivery.interaction === undefined
-    ? ''
-    : interactionText(delivery.interaction, { markdown: false });
-  return [`# ${delivery.title}`, delivery.body, delivery.detail ?? '', interaction]
-    .filter((part) => part !== '')
-    .join('\n\n');
-}
-
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function extensionOf(mediaType: string): string {
-  switch (mediaType) {
-    case 'image/jpeg':
-      return 'jpg';
-    case 'image/webp':
-      return 'webp';
-    case 'image/gif':
-      return 'gif';
-    default:
-      return 'png';
   }
 }
