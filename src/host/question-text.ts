@@ -34,13 +34,6 @@ export function multiSelectSuffix(question: InteractionQuestion): string {
   return question.multiSelect === true ? '（可多选）' : '';
 }
 
-/** 表单值里的自由文本：空串、全空白、非字符串都当没填。 */
-export function trimText(raw: unknown): string | undefined {
-  if (typeof raw !== 'string') return undefined;
-  const text = raw.trim();
-  return text === '' ? undefined : text;
-}
-
 /** 单题的回复指引；与核心 `interactionMarkdown` 的结尾保持一致。 */
 function guidance(interaction: Interaction): string {
   const { questions } = interaction;
@@ -60,8 +53,8 @@ function guidance(interaction: Interaction): string {
 /**
  * 交互的文字形态：题目、选项与结尾的回复指引。
  *
- * `markdown` 控制加粗标记——飞书**文本**消息不渲染 Markdown，纯文本形态下
- * 星号只会原样显示（卡片里的 markdown 组件才认）。
+ * `markdown` 控制加粗标记：卡片里的 markdown 组件认 `**`；降级文本按纯文本
+ * 形态给出（不加粗），避免在纯文本内容里出现星号。
  */
 export function interactionText(interaction: Interaction, options: { markdown: boolean }): string {
   const { questions } = interaction;

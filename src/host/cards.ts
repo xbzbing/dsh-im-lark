@@ -15,7 +15,7 @@
 import { CARD_BODY_BYTES_MAX, CARD_COMPONENTS_MAX } from '../shared/limits.ts';
 import type { Interaction, InteractionAnswerDraft, InteractionAnswerItem, InteractionQuestion, Delivery } from './protocol.ts';
 import type { RejectReason } from './protocol.ts';
-import { interactionText, multiSelectSuffix, questionHeading, trimText } from './question-text.ts';
+import { interactionText, multiSelectSuffix, questionHeading } from './question-text.ts';
 
 export const CARD_SCHEMA = '2.0';
 
@@ -99,13 +99,26 @@ function inputName(questionIndex: number): string {
   return `custom_${questionIndex}`;
 }
 
-function customInput(name: string, placeholder = '其他答案（可选）：填写后点提交'): Record<string, unknown> {
+function customInput(
+  name: string,
+  placeholder = '其他答案（可选）：填写后点提交',
+  value?: string,
+): Record<string, unknown> {
   return {
     tag: 'input',
     name,
     placeholder: { tag: 'plain_text', content: placeholder },
     width: 'fill',
+    // 重画时回填已填内容；`default_value` 是官方 input 字段（见 docs/protocol）。
+    ...(value === undefined ? {} : { default_value: value }),
   };
+}
+
+/** 表单值里的自由文本：空串、全空白、非字符串都当没填。 */
+function trimText(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const text = raw.trim();
+  return text === '' ? undefined : text;
 }
 
 function submitButton(value: Record<string, unknown>, label = '提交'): Record<string, unknown> {
@@ -136,6 +149,8 @@ export interface DeliveryCardOptions {
   interaction?: Interaction;
   /** 是否渲染按钮；流式更新与已作答的终态卡传 false。 */
   interactive?: boolean;
+  /** 重画时回填的表单值（`answer_*` / `custom_*`）；只有重试卡需要。 */
+  formValues?: Record<string, unknown>;
 }
 
 /**
@@ -160,7 +175,11 @@ export function renderDeliveryCard(delivery: Delivery, options: DeliveryCardOpti
       // 光给题干，用户既看不到选项，也不知道该去哪、怎么回。
       elements.push({ tag: 'markdown', content: interactionText(interaction, { markdown: true }), text_size: 'normal' });
     } else {
-      elements.push({ tag: 'form', name: 'ask_form', elements: formElements(delivery.id, interaction.questions) });
+      elements.push({
+        tag: 'form',
+        name: 'ask_form',
+        elements: formElements(delivery.id, interaction.questions, options.formValues),
+      });
     }
   }
 
@@ -188,9 +207,19 @@ export function isAnswerable(interaction: Interaction): boolean {
 }
 
 /** 一道题在 form 里的部分：题干 + 详情 + 单双选说明 + 勾选器（或输入框）。 */
-function questionFormPart(question: InteractionQuestion, index: number, total: number): unknown[] {
+function questionFormPart(
+  question: InteractionQuestion,
+  index: number,
+  total: number,
+  formValues: Record<string, unknown> | undefined,
+): unknown[] {
+  const custom = trimText(formValues?.[inputName(index)]);
   const parts: unknown[] = [
-    { tag: 'markdown', content: `${questionHeading(question, index, total)}${multiSelectSuffix(question)}`, text_size: 'normal' },
+    {
+      tag: 'markdown',
+      content: `**${questionHeading(question, index, total)}**${multiSelectSuffix(question)}`,
+      text_size: 'normal',
+    },
   ];
   if (question.detail !== undefined && question.detail !== '') {
     parts.push({ tag: 'markdown', content: question.detail, text_size: 'normal' });
@@ -199,7 +228,7 @@ function questionFormPart(question: InteractionQuestion, index: number, total: n
   const options = question.options ?? [];
   if (options.length === 0) {
     parts.push({ tag: 'markdown', content: '直接在下方输入框作答，填好后点「提交」。', text_size: 'notation' });
-    parts.push(customInput(inputName(index), '在这里作答：填写后点提交'));
+    parts.push(customInput(inputName(index), '在这里作答：填写后点提交', custom));
     return parts;
   }
 
@@ -216,12 +245,12 @@ function questionFormPart(question: InteractionQuestion, index: number, total: n
     parts.push({
       tag: 'checker',
       name: checkerName(index, optionIndex),
-      checked: false,
+      checked: formValues?.[checkerName(index, optionIndex)] === true,
       overall_checkable: false,
       text: optionText(option),
     });
   });
-  parts.push(customInput(inputName(index)));
+  parts.push(customInput(inputName(index), undefined, custom));
   return parts;
 }
 
@@ -230,9 +259,13 @@ function questionFormPart(question: InteractionQuestion, index: number, total: n
  *
  * form 容器只能放在卡片根部，所以题干也进 form；控件 `name` 全卡唯一，用题号区分。
  */
-function formElements(deliveryId: string, questions: readonly InteractionQuestion[]): unknown[] {
+function formElements(
+  deliveryId: string,
+  questions: readonly InteractionQuestion[],
+  formValues: Record<string, unknown> | undefined,
+): unknown[] {
   const elements: unknown[] = [];
-  questions.forEach((question, index) => elements.push(...questionFormPart(question, index, questions.length)));
+  questions.forEach((question, index) => elements.push(...questionFormPart(question, index, questions.length, formValues)));
   elements.push(submitButton({ d: deliveryId }, questions.length > 1 ? `提交 ${questions.length} 题答案` : '提交'));
   return elements;
 }
@@ -243,7 +276,10 @@ export function renderAnsweredCard(delivery: Delivery, answers: readonly Interac
   const body = card.body as { elements: unknown[] };
   const lines = answers.map((answer) => {
     const question = delivery.interaction?.questions.find((item) => item.id === answer.id);
-    const chosen = answer.selected.length > 0 ? answer.selected.join('、') : answer.custom ?? '（自定义）';
+    // 勾选与「其他」可能同时存在（多选），两段都要展示，不能只留勾选。
+    const chosen = [answer.selected.join('、'), answer.custom]
+      .filter((part): part is string => part !== undefined && part !== '')
+      .join('；') || '（未填写）';
     return `- ${question?.header ?? question?.question ?? answer.id}：${chosen}`;
   });
   body.elements.push({ tag: 'markdown', content: ['---', '', '**已作答**', ...lines].join('\n'), text_size: 'normal' });
@@ -265,8 +301,11 @@ export function renderSupersededCard(delivery: Delivery): Card {
  * 回到可用状态（官方「表单提交后更新为已提交卡片」的同一套做法）。所以拒绝时不能只
  * 发一句提示，得把这张卡本身重画一遍。
  */
-export function renderRetryCard(delivery: Delivery, note: string): Card {
-  const card = renderDeliveryCard(delivery, { interactive: true });
+export function renderRetryCard(delivery: Delivery, note: string, formValues?: Record<string, unknown>): Card {
+  const card = renderDeliveryCard(delivery, {
+    interactive: true,
+    ...(formValues === undefined ? {} : { formValues }),
+  });
   const body = card.body as { elements: unknown[] };
   body.elements.push({ tag: 'markdown', content: `_**${note}**_`, text_size: 'notation' });
   return card;
@@ -349,6 +388,7 @@ export class InteractionStore {
  * 约定：
  * - value 里的 `d` 是交付 id（短键省卡片体积，且 value 必须是对象）；
  * - 勾选值在 `form_value.answer_<题号>_<选项号>`，自由文本在 `form_value.custom_<题号>`；
+ * - 单选有「其他」时以自由文本为准（勾选项忽略，与旧版一致）；多选可与勾选并存；
  * - 少答、单选勾多项都在这里拒绝并指出题号，桥把原因写回卡片让用户重填；
  * - 审批类不会被登记为可作答（见 `isAnswerable`），真出现就跳过它。
  */
@@ -360,17 +400,17 @@ export function answerFromAction(
   now: number,
 ): InteractionAnswerDraft | { reason: RejectReason; detail?: string } {
   const deliveryId = typeof value.d === 'string' ? value.d : '';
-  if (deliveryId === '') return { reason: 'invalid', detail: '回调缺少交付 id' };
+  if (deliveryId === '') return { reason: 'invalid', detail: '这张卡的作答信息不完整，请在 Web 端重新作答。' };
 
   const pending = store.get(deliveryId);
-  if (pending === undefined) return { reason: 'unknown', detail: '交付已不在内存里（可能已重启）' };
+  if (pending === undefined) return { reason: 'unknown', detail: '这张卡已经失效（插件重启过），请在 Web 端重新作答。' };
   if (pending.answered) return { reason: 'settled', detail: '这条已经作答' };
   if (pending.expiresAt !== undefined && pending.expiresAt <= now) return { reason: 'expired' };
-  if (formValues === undefined) return { reason: 'invalid-answer', detail: '回调里没有表单值' };
+  if (formValues === undefined) return { reason: 'invalid-answer', detail: '没收到表单内容，请重新提交；或到 Web 端作答。' };
 
   const answers: InteractionAnswerItem[] = [];
   const missing: number[] = [];
-  let singleOverflow = 0;
+  const singleOverflows: number[] = [];
 
   pending.questions.forEach((question, index) => {
     if (question.intent === 'approval') return;
@@ -379,21 +419,31 @@ export function answerFromAction(
       .map((option, optionIndex) => (formValues[checkerName(index, optionIndex)] === true ? option.label : undefined))
       .filter((label): label is string => label !== undefined);
     const custom = trimText(formValues[inputName(index)]);
+    // 单选的「其他」是替代项：填了就只交 custom，勾选不再参与校验。
+    const customOnly = question.multiSelect !== true && custom !== undefined;
 
-    if (options.length > 0 && question.multiSelect !== true && checked.length > 1) singleOverflow = index + 1;
+    if (!customOnly && options.length > 0 && question.multiSelect !== true && checked.length > 1) {
+      singleOverflows.push(index + 1);
+    }
     if (checked.length === 0 && custom === undefined) {
       missing.push(index + 1);
       return;
     }
-    answers.push({ id: question.id, selected: checked, ...(custom === undefined ? {} : { custom }) });
+    answers.push({
+      id: question.id,
+      selected: customOnly ? [] : checked,
+      ...(custom === undefined ? {} : { custom }),
+    });
   });
 
-  if (singleOverflow > 0) {
-    return { reason: 'invalid-answer', detail: `第 ${singleOverflow} 题是单选题，只能勾选一项` };
+  if (singleOverflows.length > 0) {
+    return {
+      reason: 'invalid-answer',
+      detail: `第 ${singleOverflows.join('、')} 题是单选题，只能勾选一项`,
+    };
   }
   if (missing.length > 0) {
     return { reason: 'invalid-answer', detail: `第 ${missing.join('、')} 题还没有作答；勾选或填写后点「提交」` };
   }
   return { deliveryId, sender, answers, at: now };
 }
-

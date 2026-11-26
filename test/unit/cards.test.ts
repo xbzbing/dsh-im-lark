@@ -5,10 +5,12 @@ import {
   InteractionStore,
   answerFromAction,
   cardBytes,
+  cardComponents,
   cardFits,
   renderAnsweredCard,
   renderDeliveryCard,
   renderMarkdownCard,
+  renderRetryCard,
   renderSupersededCard,
 } from '../../src/host/cards.ts';
 import type { Delivery, InteractionQuestion } from '../../src/host/protocol.ts';
@@ -93,7 +95,7 @@ test('交付卡：单选也是勾选器，文案说明只能勾一项、点提�
   assert.match(JSON.stringify(shape.body.elements), /画幅：选一个/u);
 });
 
-test('交付卡：多选用 multi_select_static，值用序号避免文案里的逗号歧义', () => {
+test('交付卡：多选用勾选器，值用序号避免文案里的逗号歧义', () => {
   const card = renderDeliveryCard(
     {
       ...DELIVERY,
@@ -168,7 +170,7 @@ test('交付卡：多题收进同一张 form，一次提交答完', () => {
 
   // 题干、题号都在卡上：①②③ 区分题目，选项是纯数字序号。
   const markdown = JSON.stringify(card.body.elements);
-  assert.match(markdown, /① 主角：第一题/u);
+  assert.match(markdown, /\*\*① 主角：第一题\*\*/u);
   assert.match(markdown, /② 画幅：第二题/u);
   assert.match(markdown, /③ 第三题/u);
 
@@ -178,7 +180,30 @@ test('交付卡：多题收进同一张 form，一次提交答完', () => {
   assert.match(submit.text.content, /提交 3 题答案/u);
 });
 
-test('交付卡：多题超出协议上限、或含审批时不给控件，完整列出题目与回复指引', () => {
+test('交付卡：重画时回填已勾选与已填内容', () => {
+  const card = renderRetryCard(
+    {
+      ...DELIVERY,
+      interaction: {
+        questions: [
+          { id: 'q1', question: '甲？', options: [{ label: '一' }, { label: '二' }] },
+          { id: 'q2', question: '补充' },
+        ],
+      },
+    },
+    '第 2 题还没有作答',
+    { answer_0_1: true, custom_1: '已填内容' },
+  ) as unknown as CardShape;
+
+  const form = card.body.elements.find((element) => element.tag === 'form') as {
+    elements: Array<Record<string, any>>;
+  };
+  assert.equal(form.elements.find((element) => element.name === 'answer_0_1')!.checked, true);
+  assert.equal(form.elements.find((element) => element.name === 'answer_0_0')!.checked, false);
+  assert.equal(form.elements.find((element) => element.name === 'custom_1')!.default_value, '已填内容');
+});
+
+test('交付卡：多题超出协议上限时不给控件，完整列出题目与回复指引', () => {
   const tooMany = renderDeliveryCard(
     {
       ...DELIVERY,
@@ -208,8 +233,28 @@ test('已作答卡：不再有按钮，附上选择结果', () => {
   assert.match(JSON.stringify(card), /问题：甲/);
 });
 
+test('已作答卡：勾选与「其他」同时展示', () => {
+  const delivery: Delivery = {
+    ...DELIVERY,
+    interaction: { questions: [{ id: 'q1', question: '选一个', options: [{ label: '甲' }] }] },
+  };
+  const card = renderAnsweredCard(delivery, [{ id: 'q1', selected: ['甲'], custom: '补充说明' }]);
+  assert.match(JSON.stringify(card), /甲；补充说明/u);
+});
+
 test('被替代卡：明确说明不再有效', () => {
   assert.match(JSON.stringify(renderSupersededCard(DELIVERY)), /已被新卡片替代/);
+});
+
+test('卡片组件数：200 通过，201 拒绝', () => {
+  const card = (count: number) => ({
+    schema: '2.0',
+    body: { elements: Array.from({ length: count }, () => ({ tag: 'markdown', content: 'x' })) },
+  });
+  assert.equal(cardComponents(card(200)), 200);
+  assert.equal(cardFits(card(200)), true);
+  assert.equal(cardComponents(card(201)), 201);
+  assert.equal(cardFits(card(201)), false);
 });
 
 test('卡片体积：超过上限时 cardFits 为 false', () => {
@@ -244,7 +289,7 @@ test('作答：单选勾一项 → 选项文案', () => {
   assert.equal(result.sender, 'ou_owner');
 });
 
-test('作答：多选勾多项按勾选顺序还原', () => {
+test('作答：多选勾多项按选项顺序还原', () => {
   const multi: InteractionQuestion = { ...CHOICE, id: 'q2', multiSelect: true };
   const result = answerFromAction({ d: 'dlv_1' }, { answer_0_1: true, answer_0_0: true }, 'ou', storeWith([multi]), 0);
   assert.ok(!('reason' in result));
@@ -266,6 +311,18 @@ test('作答：「其他」输入落成 custom（多选可与勾选并存）', (
   );
   assert.ok(!('reason' in both));
   assert.deepEqual(both.answers, [{ id: 'q2', selected: ['甲'], custom: '补充一句' }]);
+});
+
+test('作答：单选勾选并填「其他」时以「其他」为准', () => {
+  const result = answerFromAction(
+    { d: 'dlv_1' },
+    { answer_0_0: true, custom_0: '都不合适' },
+    'ou',
+    storeWith([CHOICE]),
+    0,
+  );
+  assert.ok(!('reason' in result));
+  assert.deepEqual(result.answers, [{ id: 'q1', selected: [], custom: '都不合适' }]);
 });
 
 test('作答：多题一次提交产出全部答项', () => {
@@ -321,6 +378,17 @@ test('作答：已作答、过期、未知交付、缺表单值分别给出协�
   assert.equal(reasonOf(storeWith([CHOICE], { expiresAt: 5 }), { d: 'dlv_1' }, { answer_0_0: true }, 10), 'expired');
   assert.equal(reasonOf(new InteractionStore(), { d: 'dlv_x' }, { answer_0_0: true }), 'unknown');
   assert.equal(reasonOf(storeWith([CHOICE]), { d: 'dlv_1' }, undefined), 'invalid-answer');
+});
+
+test('作答：未知交付与缺交付 id 的提示是给用户看的', () => {
+  const unknown = answerFromAction({ d: 'dlv_x' }, {}, 'ou', new InteractionStore(), 0);
+  assert.ok('reason' in unknown);
+  assert.match(unknown.detail ?? '', /失效/u);
+  assert.match(unknown.detail ?? '', /Web 端/u);
+
+  const invalid = answerFromAction({}, {}, 'ou', new InteractionStore(), 0);
+  assert.ok('reason' in invalid);
+  assert.match(invalid.detail ?? '', /重新作答/u);
 });
 
 test('作答：缺交付 id、或勾了不存在的选项都算无效', () => {
