@@ -110,11 +110,13 @@ Items editable in the panel are written to `$DSH_HOME/.dsh-im-lark/config.json` 
 | --- | --- |
 | `/help` | List commands |
 | `/new` | Start a new session |
-| `/sessions` | List recent sessions and switch to one |
+| `/sessions [page]` | List recent sessions and their numbers, 10 per page |
 | `/status` | Current session and runtime state |
 | `/stop` | Abort the running turn |
 | `/trace` | Model and elapsed time of the last answer |
-| `/send <text>` | Send text directly, without the model |
+| `/send <index or session id> <text>` | Send to that session; its answer comes back here. Images allowed |
+
+`/send` is queued, so it does not interrupt the target session's running turn; sending to the current session behaves like a normal message.
 
 ## CLI and slash command
 
