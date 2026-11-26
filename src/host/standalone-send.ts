@@ -20,6 +20,7 @@ import {
   sessionLabel,
 } from './session-list.ts';
 import type { SendWatcher } from './session-watch.ts';
+import type { StandaloneCommand } from './standalone-command.ts';
 import type { BusyMode, StandaloneController } from './standalone-types.ts';
 import { frontSessionOf } from './state/direct.ts';
 import type { DirectBindingStore } from './state/direct.ts';
@@ -36,10 +37,12 @@ export interface SendCommandHost {
   logger: LarkLogger;
   /** 当前会话的提交；`mode` 由调用方决定是否强制排队。返回失败原因，成功为 null。 */
   submitCurrent: (text: string, draft: OwnerMessageDraft, mode: BusyMode) => Promise<string | null>;
-  /** 当前会话的完成对齐（`DoneAlign`）。 */
-  pushAlign: (platformMessageId: string, mode: BusyMode) => void;
+  /** 当前会话的完成对齐（`DoneAlign`）；`waiting` 表示它排在别人正跑的那一轮之后。 */
+  pushAlign: (platformMessageId: string, mode: BusyMode, waiting: boolean) => void;
   /** 面板的「回合内插话」设置；`/queue` 会绕过它。 */
   busyMode: () => BusyMode;
+  /** 当前绑定会话是否正在跑一轮（比列表快照更准，供 DONE 对齐与提示用）。 */
+  isRunning: () => boolean;
   reply: (text: string) => Promise<boolean>;
 }
 
@@ -50,12 +53,12 @@ export interface SendCommandHost {
  * 登记观察者，等它 `turn/end` 再发回来。两条路都不切换绑定。
  */
 export async function handleSendCommand(
-  command: { ref: string; text: string },
+  command: Extract<StandaloneCommand, { kind: 'send' | 'queue' }>,
   messageId: string,
   draft: OwnerMessageDraft,
   host: SendCommandHost,
-  forceQueue = false,
 ): Promise<boolean> {
+  const forceQueue = command.kind === 'queue';
   const images = draft.images ?? [];
   if (command.ref === '' || (command.text === '' && images.length === 0)) {
     await host.reply(forceQueue ? QUEUE_USAGE : SEND_USAGE);
@@ -103,21 +106,26 @@ export async function handleSendCommand(
     picked = resolved;
   }
 
+  // 当前绑定会话的回合状态由事件维护，比列表快照准；提交前先取，免得被这一轮的 turn/start 覆盖。
   if (binding !== null && binding.sessionId === picked.sessionId) {
+    const running = host.isRunning();
     const error = await host.submitCurrent(command.text, draft, mode);
     if (error !== null) {
       await host.reply(error);
       return false;
     }
-    host.pushAlign(messageId, mode);
-    await host.reply(`已交给当前会话「${picked.title || '未命名会话'}」，回答照常发回这里。`);
+    // 排队且目标正忙时，下一个 turn/end 属于它排在后面的那一轮，不能提前结算。
+    host.pushAlign(messageId, mode, mode === 'queue' && running);
+    await host.reply(`已交给当前会话「${picked.title || '未命名会话'}」${waitNote(running, mode)}，回答照常发回这里。`);
     return true;
   }
 
-  // 列表里刚读到过它。只有排队且目标正在跑时，先到的 turn/end 才属于上一轮；
-  // 插话会进入当前回合，这个 turn/end 就是它的回答。
+  // 其它会话只能看列表快照，提示按它写；DONE 对齐不依赖它。
   const running = catalog.sessions.find((row) => row.sessionId === picked.sessionId)?.running === true;
-  const queued = running && mode === 'queue';
+
+  // 排队时先用 watcher 的 pendingStart 跳过目标当前那一轮；turn/start 会清掉它，
+  // 所以这里不依赖快照的 running（快照可能已经过期）。插话进入当前回合，不跳过。
+  const queued = mode === 'queue';
   const tracked = host.watcher.track(
     picked.sessionId,
     picked.title,
@@ -154,13 +162,14 @@ export async function handleSendCommand(
     return false;
   }
 
-  const waitNote = running
-    ? mode === 'queue'
-      ? '，它正在运行，排在当前这一轮之后'
-      : '，它正在运行，这条会插进当前回合'
-    : '';
   const dropped = (draft.files?.length ?? 0) > 0 ? '；文件没有转发' : '';
-  await host.reply(`已交给会话「${picked.title || '未命名会话'}」${waitNote}${dropped}，这一轮结束后把回答发给你。`);
+  await host.reply(`已交给会话「${picked.title || '未命名会话'}」${waitNote(running, mode)}${dropped}，这一轮结束后把回答发给你。`);
   return true;
+}
+
+/** 目标正在跑时的提示：排队说等下一轮，插话说进当前回合。 */
+function waitNote(running: boolean, mode: BusyMode): string {
+  if (!running) return '';
+  return mode === 'queue' ? '，它正在运行，排在当前这一轮之后' : '，它正在运行，这条会插进当前回合';
 }
 

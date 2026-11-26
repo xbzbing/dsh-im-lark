@@ -313,6 +313,72 @@ test('/queue 缺参数时给专用用法', async () => {
   });
 });
 
+test('/queue 到正在跑的当前会话不随上一轮打 DONE', async () => {
+  await withTempDir(async (dir) => {
+    const h = await harness(dir.path, { rows: ROWS });
+    await bindAndList(h);
+
+    // 先把「你好」那一轮结算掉，免得它挡在队头替后面那条顶账。
+    h.chat.handleEvent('s_1', { type: 'turn/start', data: {} });
+    h.chat.handleEvent('s_1', {
+      type: 'assistant/message',
+      data: { message: { content: [{ type: 'text', text: '你好' }] } },
+    });
+    h.chat.handleEvent('s_1', { type: 'turn/end', data: {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // 当前会话已经有一轮在跑（不是这条命令开的）。
+    h.chat.handleEvent('s_1', { type: 'turn/start', data: {} });
+    const queued = inbound();
+    await h.chat.handleInbound(queued, draftOf(queued, '/queue 0 排在后面'));
+    assert.equal(h.prompts.at(-1)!.mode, 'queue');
+    assert.match(h.deliveries.at(-1)!.text, /排在当前这一轮之后/);
+
+    h.chat.handleEvent('s_1', {
+      type: 'assistant/message',
+      data: { message: { content: [{ type: 'text', text: '上一轮的答' }] } },
+    });
+    h.chat.handleEvent('s_1', { type: 'turn/end', data: {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(!h.marked.includes(queued.messageId), '这一轮不是它开的，不能提前打 DONE');
+
+    h.chat.handleEvent('s_1', { type: 'turn/start', data: {} });
+    h.chat.handleEvent('s_1', {
+      type: 'assistant/message',
+      data: { message: { content: [{ type: 'text', text: '排队答' }] } },
+    });
+    h.chat.handleEvent('s_1', { type: 'turn/end', data: {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(h.marked.includes(queued.messageId));
+  });
+});
+
+test('/queue 到空闲的其它会话时，先用 turn/start 对齐再收回答', async () => {
+  await withTempDir(async (dir) => {
+    // 列表快照说空闲；提交时目标可能已经在跑，所以排队一律先跳过当前这一轮。
+    const h = await harness(dir.path, { rows: ROWS });
+    await bindAndList(h);
+
+    const queued = inbound();
+    await h.chat.handleInbound(queued, draftOf(queued, '/queue 1 排队'));
+    assert.equal(h.prompts.at(-1)!.mode, 'queue');
+
+    // 提交前就开始的那一轮，收尾不属于我们。
+    h.chat.handleEvent('s_2', { type: 'turn/end', data: {} });
+    await h.chat.drain();
+    assert.equal(h.deliveries.filter((item) => item.text.includes('来自会话')).length, 0);
+
+    h.chat.handleEvent('s_2', { type: 'turn/start', data: {} });
+    h.chat.handleEvent('s_2', {
+      type: 'assistant/message',
+      data: { message: { content: [{ type: 'text', text: '排队答' }] } },
+    });
+    h.chat.handleEvent('s_2', { type: 'turn/end', data: {} });
+    await h.chat.drain();
+    assert.match(h.deliveries.at(-1)!.text, /排队答/);
+  });
+});
+
 test('/send 超时后不再等，且不打 DONE', async () => {
   await withTempDir(async (dir) => {
     const h = await harness(dir.path, { rows: ROWS, sendTimeoutMs: 60_000 });

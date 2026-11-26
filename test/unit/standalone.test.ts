@@ -797,6 +797,101 @@ test('独立模式：插话模式下两条被同一轮吸收，一次 turn/end �
   });
 });
 
+test('独立模式：排队消息排在别人那一轮后面时，不随那一轮打 DONE', async () => {
+  await withTempDir(async (dir) => {
+    const marked: string[] = [];
+    const { chat } = await harness(dir.path, { settings: { directBusyMode: 'queue' }, markDone: (id) => marked.push(id) });
+
+    // 第一条自己开一轮，先正常结算掉，避免它挡在队头。
+    const first = inbound();
+    await chat.handleInbound(first, draftOf(first, '第一条'));
+    chat.handleEvent('s_1', { type: 'turn/start', data: {} });
+    chat.handleEvent('s_1', { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '答一' }] } } });
+    chat.handleEvent('s_1', { type: 'turn/end', data: {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(marked, [first.messageId]);
+
+    // 另一轮已经在跑（不是这条消息开的），此时排队的消息还没轮到。
+    chat.handleEvent('s_1', { type: 'turn/start', data: {} });
+    const second = inbound();
+    await chat.handleInbound(second, draftOf(second, '排队等下一轮'));
+    chat.handleEvent('s_1', { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '别人那轮的答' }] } } });
+    chat.handleEvent('s_1', { type: 'turn/end', data: {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(marked, [first.messageId], '这一轮不是它开的，不能提前打 DONE');
+
+    chat.handleEvent('s_1', { type: 'turn/start', data: {} });
+    chat.handleEvent('s_1', { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '轮到它了' }] } } });
+    chat.handleEvent('s_1', { type: 'turn/end', data: {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(marked, [first.messageId, second.messageId]);
+  });
+});
+
+test('独立模式：排队消息排的那一轮结束时，下一条排队消息自己开始', async () => {
+  await withTempDir(async (dir) => {
+    const marked: string[] = [];
+    const { chat } = await harness(dir.path, { settings: { directBusyMode: 'queue' }, markDone: (id) => marked.push(id) });
+
+    const first = inbound();
+    await chat.handleInbound(first, draftOf(first, '第一条'));
+    chat.handleEvent('s_1', { type: 'turn/start', data: {} });
+
+    // 第一条跑着时又排一条：它要等第一条那轮结束才轮到自己。
+    const second = inbound();
+    await chat.handleInbound(second, draftOf(second, '第二条'));
+
+    chat.handleEvent('s_1', { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '答一' }] } } });
+    chat.handleEvent('s_1', { type: 'turn/end', data: {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(marked, [first.messageId], '第二条排在第一条之后，这轮不能结算它');
+
+    chat.handleEvent('s_1', { type: 'turn/start', data: {} });
+    chat.handleEvent('s_1', { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '答二' }] } } });
+    chat.handleEvent('s_1', { type: 'turn/end', data: {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(marked, [first.messageId, second.messageId], '轮到它自己那轮，必须结算');
+  });
+});
+
+test('独立模式：排队期间插进那一轮的说法，随那一轮结算而不是随排队那条', async () => {
+  await withTempDir(async (dir) => {
+    const marked: string[] = [];
+    const { chat } = await harness(dir.path, {
+      listRows: [{ sessionId: 's_1', projections: { values: { title: '甲' } } }],
+      markDone: (id) => marked.push(id),
+    });
+
+    // 先把建会话那条结算掉，避免它挡在队头。
+    const first = inbound();
+    await chat.handleInbound(first, draftOf(first, '第一条'));
+    chat.handleEvent('s_1', { type: 'turn/start', data: {} });
+    chat.handleEvent('s_1', { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '答一' }] } } });
+    chat.handleEvent('s_1', { type: 'turn/end', data: {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(marked, [first.messageId]);
+
+    // 默认插话设置下，/queue 仍然固定排队；后面这条普通消息是 steer。
+    chat.handleEvent('s_1', { type: 'turn/start', data: {} });
+    const queued = inbound();
+    await chat.handleInbound(queued, draftOf(queued, '/queue 0 排队'));
+    const steered = inbound();
+    await chat.handleInbound(steered, draftOf(steered, '插一句'));
+
+    chat.handleEvent('s_1', { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '两条一起答' }] } } });
+    chat.handleEvent('s_1', { type: 'turn/end', data: {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(marked.includes(steered.messageId), '插话被这一轮吸收，应随这一轮结算');
+    assert.ok(!marked.includes(queued.messageId), '排队那条还没轮到');
+
+    chat.handleEvent('s_1', { type: 'turn/start', data: {} });
+    chat.handleEvent('s_1', { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '排队答' }] } } });
+    chat.handleEvent('s_1', { type: 'turn/end', data: {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(marked.includes(queued.messageId), '排队那条自己那轮结束才结算');
+  });
+});
+
 test('独立模式：回复发送失败时不打 DONE（即使有回答）', async () => {
   await withTempDir(async (dir) => {
     const marked: string[] = [];

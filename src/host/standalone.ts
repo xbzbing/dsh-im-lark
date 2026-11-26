@@ -49,7 +49,7 @@ export interface StandaloneOptions {
   ownerLabel?: () => string;
   /** 提交超时：只约束「受理前」的等待。 */
   submitTimeoutMs?: number;
-  /** `/send` 等回答的上限（默认 30 分钟；测试可调小）。 */
+  /** `/send`、`/queue` 等回答的上限（默认 30 分钟；测试可调小）。 */
   sendTimeoutMs?: number;
   /** 测试注入的定时器（生产用 `setTimeout().unref()`）。 */
   setTimer?: (callback: () => void, ms: number) => unknown;
@@ -160,16 +160,19 @@ export class StandaloneChat {
     const text = draft.text.trim();
     const command = parseCommand(text);
     if (command !== null) {
-      // `/send` 要等目标会话那一轮结束才算处理完；其余命令当场就答完了。
+      // `/send`、`/queue` 要等目标会话那一轮结束才算处理完；其余命令当场就答完了。
       const awaiting = await this.#runCommand(command, message.messageId, draft);
       if (!awaiting) this.#markDone?.(message.messageId);
       return;
     }
 
-    const showNotice = await this.#submit(text, draft);
+    // 提交前先记下「有没有别人的一轮在跑」：排队消息要等这一轮结束才是它的回合。
+    const mode = this.#busyMode();
+    const behindRunning = mode === 'queue' && this.#running;
+    const showNotice = await this.#submit(text, draft, mode);
     // 提交失败的通知不是完成：只留「收到」，不盖 DONE；回答要等回合结束。
     if (showNotice !== null) await this.#reply(showNotice);
-    else this.#align.push(message.messageId, this.#busyMode());
+    else this.#align.push(message.messageId, mode, behindRunning);
   }
 
   /** `session/event`：投递目标会话与绑定会话各走一条路。 */
@@ -359,10 +362,11 @@ export class StandaloneChat {
           submitTimeoutMs: this.#submitTimeoutMs,
           logger: this.#logger,
           submitCurrent: (text, value, mode) => this.#submit(text, value, mode),
-          pushAlign: (id, mode) => this.#align.push(id, mode),
+          pushAlign: (id, mode, waiting) => this.#align.push(id, mode, waiting),
           busyMode: () => this.#busyMode(),
+          isRunning: () => this.#running,
           reply: (text) => this.#reply(text),
-        }, command.kind === 'queue');
+        });
       case 'sessions':
         await handleSessionsCommand(command.page, {
           controller: () => this.#controller(),
@@ -399,7 +403,7 @@ export class StandaloneChat {
       '',
       `会话：${binding === null ? '还没有（发一条消息就会建）' : binding.title ?? binding.sessionId}`,
       `运行中：${this.#running ? '是' : '否'}`,
-      `回合提交：${mode === 'queue' ? '排队' : '插话'}`,
+      `回合提交：${mode === 'queue' ? '排队' : '插话'}（\`/queue\` 固定排队）`,
       `控制器：${this.#controller() === null ? '不可用' : '就绪'}`,
     ].join('\n');
   }
