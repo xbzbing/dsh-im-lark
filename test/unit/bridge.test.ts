@@ -175,6 +175,15 @@ const DELIVERY: Delivery = {
   body: '这是正文',
 };
 
+/** 假 API 记的是卡片 JSON 原文：取出其中所有 markdown 元素的文字，方便断言正文。 */
+function cardText(raw: string): string {
+  const card = JSON.parse(raw) as { body: { elements: Array<{ tag: string; content?: string }> } };
+  return card.body.elements
+    .filter((element) => element.tag === 'markdown')
+    .map((element) => element.content ?? '')
+    .join('\n');
+}
+
 /**
  * 本地镜像核心 `validateAnswer` 的判定：题 id 必须存在且各答一次，选中项必须是
  * 该题的选项，单选最多一项，每项至少要有非空 selected 或 custom。
@@ -258,6 +267,68 @@ test('桥：只有引用过我们收到的消息时才用 reply', async () => {
   setReply('om_known');
   await provider.deliver({ ...DELIVERY, id: 'dlv_known', inReplyTo: 'oc_chat:om_known' });
   assert.equal(operations().length, 2);
+});
+
+const SESSION_REF = [{ kind: 'session' as const, id: 's_1', title: '会话一' }];
+
+test('桥：真的发出了引用回复时，卡片不再重复「参考」段', async () => {
+  const { provider, contents, setReply } = fixture();
+  setReply('om_known');
+
+  const receipt = await provider.deliver({ ...DELIVERY, id: 'dlv_quoted', inReplyTo: 'oc_chat:om_known', refs: SESSION_REF });
+
+  assert.equal(receipt.status, 'sent');
+  // 引用气泡已经定位到原消息，再列一遍会话标题只是噪音。
+  assert.doesNotMatch(cardText(contents[0]!), /参考/u);
+});
+
+test('桥：没有引用回复时，卡片用「参考」段给出会话定位', async () => {
+  const { provider, contents } = fixture();
+
+  await provider.deliver({ ...DELIVERY, id: 'dlv_push', refs: SESSION_REF });
+
+  // 主动推送（长任务、周报、分析）没有引用气泡，只能靠这段告诉用户这是哪个会话。
+  assert.match(cardText(contents[0]!), /参考：\n- 会话一/u);
+});
+
+test('桥：inReplyTo 指向的消息不在内存里时仍保留「参考」段', async () => {
+  const { provider, contents } = fixture();
+
+  // 插件重启后 inbound 缓存是空的：消息带不上引用气泡，删掉「参考」就丢了唯一定位线索。
+  await provider.deliver({ ...DELIVERY, id: 'dlv_lost', inReplyTo: 'oc_chat:om_lost', refs: SESSION_REF });
+
+  assert.match(cardText(contents[0]!), /参考：\n- 会话一/u);
+});
+
+test('桥：作答后重画卡片不会把「参考」段补回来', async () => {
+  const { provider, bridge, patches, setReply } = fixture();
+  bridge.attach(coreHandle().handle);
+  setReply('om_known');
+
+  const receipt = await provider.deliver({
+    ...DELIVERY,
+    id: 'dlv_ask',
+    intent: 'action',
+    inReplyTo: 'oc_chat:om_known',
+    refs: SESSION_REF,
+    interaction: { questions: [{ id: 'q1', question: '甲？', options: [{ label: '一' }] }] },
+  });
+  assert.equal(receipt.status, 'sent');
+
+  const result = await bridge.applyCardAction({
+    eventId: 'ev_ref_1',
+    messageId: 'om_1',
+    chatId: 'oc_chat',
+    operatorOpenId: 'ou_owner',
+    value: { d: 'dlv_ask' },
+    formValues: { answer_0_0: true },
+  });
+  assert.deepEqual(result, { accepted: true });
+
+  // 终态改写是异步 PATCH：等一轮宏任务再断言。
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(patches.length, 1);
+  assert.doesNotMatch(JSON.stringify(patches[0]), /参考/u);
 });
 
 test('桥：核心用 open_id 当收件人时翻译成会话 id', async () => {

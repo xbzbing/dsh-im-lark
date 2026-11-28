@@ -127,10 +127,15 @@ export function createLarkBridge(deps: BridgeDeps): LarkBridge {
   let capabilities: BridgeCapabilities = LARK_CAPABILITIES;
   let disposed = false;
 
-  /** 已交付的记录：PATCH 终态与 supersedes 都要回看原文。 */
+  /**
+   * 已交付的记录：PATCH 终态与 supersedes 都要回看原文。
+   *
+   * `delivery` 是**渲染用**的那份（见 `presented`），不是核心原样：重画必须和首屏一致，
+   * 否则作答后「参考」段会凭空冒出来。
+   */
   const delivered = new Map<string, { delivery: Delivery; messageId: string }>();
-  /** 流式交付的当前修订：低于它的修订不再产生平台操作。 */
-  const streams = new Map<string, { revision: number; messageId: string }>();
+  /** 流式交付的当前修订：低于它的修订不再产生平台操作。`quoted` 记首屏有没有引用气泡。 */
+  const streams = new Map<string, { revision: number; messageId: string; quoted: boolean }>();
   /** 卡片装不下的流：已用分条消息发过一次，后续修订不再原地 PATCH，避免消息瀑布。 */
   const detachedStreams = new Map<string, string>();
   /** 核心回引用的 `messageId` → 平台消息 id（有界）。 */
@@ -179,7 +184,7 @@ export function createLarkBridge(deps: BridgeDeps): LarkBridge {
         return { deliveryId, status: 'sent', bridgeMessageId: current.messageId, messagesSent: 0 };
       }
       if (current !== undefined) {
-        const card = renderDeliveryCard(delivery, { interactive: false });
+        const card = renderDeliveryCard(presented(delivery, current.quoted), { interactive: false });
         if (!cardFits(card)) {
           // 这次修订装不进卡片：只发一次分条最终稿，并把这条流标记为「不再原地更新」。
           streamOversized = true;
@@ -187,7 +192,7 @@ export function createLarkBridge(deps: BridgeDeps): LarkBridge {
         } else {
           try {
             await deps.api.patchCard({ messageId: current.messageId, card });
-            remember(streams, stream.id, { revision: stream.revision, messageId: current.messageId }, MAX_DELIVERED);
+            remember(streams, stream.id, { revision: stream.revision, messageId: current.messageId, quoted: current.quoted }, MAX_DELIVERED);
             markDone();
             return { deliveryId, status: 'sent', bridgeMessageId: current.messageId, messagesSent: 0 };
           } catch (error) {
@@ -207,14 +212,16 @@ export function createLarkBridge(deps: BridgeDeps): LarkBridge {
       fileName: image.name ?? `图片.${extensionOf(image.mediaType)}`,
     }));
 
-    const card = renderDeliveryCard(delivery, { interactive: delivery.interaction !== undefined });
+    const replyTarget = delivery.inReplyTo === undefined ? undefined : inbound.get(delivery.inReplyTo);
+    // 引用气泡已经定位到原消息，卡片里不用再列一遍 `refs`（见 presented）。
+    const quoted = replyTarget !== undefined;
+    const card = renderDeliveryCard(presented(delivery, quoted), { interactive: delivery.interaction !== undefined });
     const useCard = cardFits(card);
     // 交互卡装不下时明确降级：内容照发，回执里带 error 说明；状态仍是 sent，避免核心重投。
     const interactionDropped = delivery.interaction !== undefined && !useCard;
     const fallbackNote = interactionDropped
       ? '\n\n（内容超过卡片上限，交互已降级为纯文本卡片；可直接回复文字作答，或到 Web 端处理。）'
       : '';
-    const replyTarget = delivery.inReplyTo === undefined ? undefined : inbound.get(delivery.inReplyTo);
 
     let receipt: Awaited<ReturnType<OutboundChannel['deliver']>>;
     try {
@@ -248,12 +255,13 @@ export function createLarkBridge(deps: BridgeDeps): LarkBridge {
 
     const messageId = receipt.messageIds[0];
     if (messageId !== undefined) {
-      remember(delivered, deliveryId, { delivery, messageId }, MAX_DELIVERED);
+      // 存渲染副本：作答/过期重画要和首屏一致，不能再把「参考」段补回来。
+      remember(delivered, deliveryId, { delivery: presented(delivery, quoted), messageId }, MAX_DELIVERED);
       if (stream !== undefined) {
         if (streamOversized || !cardFits(card)) {
           remember(detachedStreams, stream.id, messageId, MAX_DELIVERED);
         } else {
-          remember(streams, stream.id, { revision: stream.revision, messageId }, MAX_DELIVERED);
+          remember(streams, stream.id, { revision: stream.revision, messageId, quoted }, MAX_DELIVERED);
         }
       }
     }
@@ -325,6 +333,21 @@ export function createLarkBridge(deps: BridgeDeps): LarkBridge {
     if (persisted !== undefined && persisted !== '') return persisted;
     // 显式给会话 id 的调用方（一致性测试、命令行）原样放行。
     return recipient.startsWith('oc_') ? recipient : undefined;
+  }
+
+  /**
+   * 交给卡片渲染的那份交付。
+   *
+   * 只有这次**真的用引用回复**定位到了原消息，才把 `refs` 去掉：「参考」段是给没有
+   * 引用气泡的消息用的（告诉用户这是哪个会话），引用气泡已经交代清楚了，再列一遍
+   * 会话标题只是噪音。判据必须是 `replyTarget` 解析成功而不是 `inReplyTo` 有值——
+   * `inbound` 只是内存缓存，插件重启后一律解析不到（重启孤儿通知正是这种），那时
+   * 消息没有引用气泡，「参考」是唯一的定位线索。
+   *
+   * 返回的是渲染副本，核心原交付不动（`completes`、`interaction` 都原样保留）。
+   */
+  function presented(delivery: Delivery, quoted: boolean): Delivery {
+    return quoted ? { ...delivery, refs: undefined } : delivery;
   }
 
   /** 旧卡改成终态；失败只记日志，不能让新交付因此失败。 */
